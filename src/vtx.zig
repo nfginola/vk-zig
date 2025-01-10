@@ -25,35 +25,24 @@ const apis: []const vk.ApiInfo = &.{
     else
         .{},
 };
-// Version on top used as relevant API
 const api_version = apis[0];
 
-// API consists of enabling commands for three types:
-// Base, Instance, and Device functions. These map to the below wrappers!
+// Dispatch tables
+const BaseDispatch = vk.BaseWrapper(apis); // Non-instance functions
+const InstanceDispatch = vk.InstanceWrapper(apis); // Instance functions
+const DeviceDispatch = vk.DeviceWrapper(apis); // Device functions (and sub-structures like queue)
 
-// Wrapper for functions that are loaded by vkGetInstanceProcAddr without an instance ()
-// vkCreateInstance, vkEnumerateInstanceVersion, etc.
-const BaseDispatch = vk.BaseWrapper(apis);
-
-// Wrapper for instance functions that are loaded by vkGetInstanceProcAddr
-const InstanceDispatch = vk.InstanceWrapper(apis);
-// Convenience wrapper for above
 const Instance = vk.InstanceProxy(apis);
-
-// Wrapper for device functions that are loaded by vkGetDeviceProcAddr
-const DeviceDispatch = vk.DeviceWrapper(apis);
-// Convenience wrapper for above
 const Device = vk.DeviceProxy(apis);
-
 const Queue = vk.QueueProxy(apis);
 
 pub const Context = struct {
     const Self = @This();
 
-    // Dispatch tables, file globals
-    var vkb: BaseDispatch = undefined; // Holds dispatch table for functions that don't need instance
-    var vki: InstanceDispatch = undefined; // Holds dispatch table for functions that need instance
-    var inst: Instance = undefined; // Convenience wrapper for InstanceDispatch
+    // Statics
+    var vkb: BaseDispatch = undefined;
+    var vki: InstanceDispatch = undefined;
+    var inst: Instance = undefined;
     var debug_msgr: ?vk.DebugUtilsMessengerEXT = null;
 
     // Per-context
@@ -68,7 +57,6 @@ pub const Context = struct {
     gq: Queue = undefined,
     pq: Queue = undefined,
     tq: Queue = undefined,
-
     sc: vk.SwapchainKHR = undefined,
 
     pub fn init(
@@ -80,7 +68,7 @@ pub const Context = struct {
         const ator = arena.allocator();
         defer arena.deinit();
 
-        try setup_dispatch_tbls(ator, opts);
+        try create_instance(ator, opts.name);
         try setup_debug_msgr();
 
         if (glfw.createWindowSurface(inst.handle, opts.window, null, &self.surf) != @intFromEnum(vk.Result.success))
@@ -107,32 +95,30 @@ pub const Context = struct {
         inst.destroyInstance(null);
     }
 
-    fn setup_dispatch_tbls(ator: Allocator, opts: InitOptions) !void {
-        // 1. Get our Vulkan entrypoint which is provided by GLFW: function that allows us to obtain our VkInstance
+    fn create_instance(ator: Allocator, app_name: [*:0]const u8) !void {
+        // Vulkan entrypoint to obtain a VkInstance provided by GLFW
         // https://registry.khronos.org/vulkan/specs/latest/man/html/vkGetInstanceProcAddr.html
         vkb = try BaseDispatch.load(@as(vk.PfnGetInstanceProcAddr, @ptrCast(&glfw.getInstanceProcAddress)));
 
-        // 2. Get necessary extensions for GLFW
         var inst_exts = std.ArrayList([*:0]const u8).init(ator);
         var inst_layers = std.ArrayList([*:0]const u8).init(ator);
 
+        // Extensions required by GLFW
         try inst_exts.appendSlice(glfw.getRequiredInstanceExtensions() orelse {
             std.log.err("Failed to get required VK instance extensions for GLFW. Error = {s}", .{glfw.mustGetError().description});
             return error.MissingInstanceExtensions;
         });
 
-        // 2. Query some more layers and extensions
         const layer_props = try vkb.enumerateInstanceLayerPropertiesAlloc(ator);
-
-        // On laptop, check availability of NV optimus
+        // Add optional NVIDIA optimus if on laptop
         for (layer_props) |prop| {
             const target = "VK_LAYER_NV_optimus";
             if (std.mem.eql(u8, (&prop.layer_name)[0..target.len], target))
-                try inst_layers.append("VK_LAYER_NV_optimus");
+                try inst_layers.append(target);
         }
 
+        // Add validation layer and associated extensios
         if (bconf.validation_layer) {
-            // Check for validation layer availability
             const validation_layer_present = for (layer_props) |prop| {
                 const target = "VK_LAYER_KHRONOS_validation";
                 if (std.mem.eql(u8, (&prop.layer_name)[0..target.len], target))
@@ -147,15 +133,6 @@ pub const Context = struct {
             try inst_layers.append("VK_LAYER_KHRONOS_validation");
         }
 
-        // 3. Create our Vulkan Instance
-        const app_info = vk.ApplicationInfo{
-            .p_application_name = opts.name,
-            .application_version = vk.makeApiVersion(0, 0, 1, 0),
-            .p_engine_name = opts.name,
-            .engine_version = vk.makeApiVersion(0, 0, 1, 0),
-            .api_version = api_version.version,
-        };
-
         for (inst_layers.items) |name| {
             std.debug.print("Layer Name: {s}\n", .{name});
         }
@@ -164,18 +141,20 @@ pub const Context = struct {
         }
 
         const inst_hdl = try vkb.createInstance(&vk.InstanceCreateInfo{
-            .p_application_info = &app_info,
+            .p_application_info = &vk.ApplicationInfo{
+                .p_application_name = app_name,
+                .application_version = vk.makeApiVersion(0, 0, 1, 0),
+                .p_engine_name = app_name,
+                .engine_version = vk.makeApiVersion(0, 0, 1, 0),
+                .api_version = api_version.version,
+            },
             .enabled_layer_count = @intCast(inst_layers.items.len),
             .pp_enabled_layer_names = @ptrCast(inst_layers.items),
             .enabled_extension_count = @intCast(inst_exts.items.len),
             .pp_enabled_extension_names = @ptrCast(inst_exts.items),
         }, null);
 
-        // 4.   Initialize 'proxying wrappers': Bundles 'handle' and associated 'functions' into a struct for convenience!
-        // 4.1  Populates dispatch table functions using GetInstanceProc (loader) and function names
         vki = try InstanceDispatch.load(inst_hdl, vkb.dispatch.vkGetInstanceProcAddr);
-
-        // 4.2  Just a proxying wrapper, holds the handle.
         inst = Instance.init(inst_hdl, &vki);
     }
 
@@ -193,7 +172,7 @@ pub const Context = struct {
     fn get_physical_device(self: *Self, ator: Allocator) !void {
         const pds = try inst.enumeratePhysicalDevicesAlloc(ator);
         for (pds) |pd| {
-            const props = vki.getPhysicalDeviceProperties(pd);
+            const props = inst.getPhysicalDeviceProperties(pd);
             if (props.device_type == .discrete_gpu) {
                 self.pd = pd;
                 self.pd_props = props;
@@ -206,7 +185,7 @@ pub const Context = struct {
         // Find suitable queue families
         var gq_qf: u32 = undefined;
         var pq_qf: u32 = undefined;
-        const qf_props = try vki.getPhysicalDeviceQueueFamilyPropertiesAlloc(self.pd, ator);
+        const qf_props = try inst.getPhysicalDeviceQueueFamilyPropertiesAlloc(self.pd, ator);
         for (qf_props, 0..) |qf, qf_idx| {
             if (qf.queue_flags.graphics_bit == true) {
                 gq_qf = @intCast(qf_idx);
@@ -231,10 +210,10 @@ pub const Context = struct {
         }
 
         // Turn on/off features available in the physical device
-        const feats = vki.getPhysicalDeviceFeatures(self.pd);
+        const feats = inst.getPhysicalDeviceFeatures(self.pd);
 
         // Queue capabilities are dependent on queue family identified by index
-        const dev = try vki.createDevice(self.pd, &vk.DeviceCreateInfo{
+        const dev = try inst.createDevice(self.pd, &vk.DeviceCreateInfo{
             .queue_create_info_count = @intCast(q_cinfos.items.len),
             .p_queue_create_infos = @ptrCast(q_cinfos.items),
             .enabled_extension_count = 1,
@@ -253,7 +232,7 @@ pub const Context = struct {
 
     fn create_swapchain(self: *Self, ator: Allocator, win: glfw.Window) !void {
         const sel_fmt: vk.SurfaceFormatKHR = blk: {
-            const surf_fmts = try vki.getPhysicalDeviceSurfaceFormatsAllocKHR(self.pd, self.surf, ator);
+            const surf_fmts = try inst.getPhysicalDeviceSurfaceFormatsAllocKHR(self.pd, self.surf, ator);
             for (surf_fmts) |fmt| {
                 if (fmt.format == .b8g8r8a8_srgb and fmt.color_space == .srgb_nonlinear_khr) {
                     break :blk fmt;
@@ -263,23 +242,22 @@ pub const Context = struct {
         };
 
         const sel_pmode: vk.PresentModeKHR = blk: {
-            const present_modes = try vki.getPhysicalDeviceSurfacePresentModesAllocKHR(self.pd, self.surf, ator);
+            const present_modes = try inst.getPhysicalDeviceSurfacePresentModesAllocKHR(self.pd, self.surf, ator);
             for (present_modes) |pmode| {
                 if (pmode == .mailbox_khr)
                     break :blk pmode;
             }
 
             // Fallback
-            break :blk vk.PresentModeKHR.fifo_khr;
-            // FIFO: Show on next vertical blank (vsync)
+            // FIFO: Show on next vertical blank (vsync) - guaranteed
             // Immediate: May cause tearing (No vsync)
+            break :blk vk.PresentModeKHR.fifo_khr;
         };
 
         const sc_extent: vk.Extent2D = blk: {
-            const surf_caps = try vki.getPhysicalDeviceSurfaceCapabilitiesKHR(self.pd, self.surf);
-            // VkSurfaceCapabilitiesKHR spec:
-            // Special value (0xFFFFFFFF, 0xFFFFFFFF) indicating that the surface size will be determined by the extent of a swapchain
-            // In this case, we will use the given window client dimensions to specify the extent
+            const surf_caps = try inst.getPhysicalDeviceSurfaceCapabilitiesKHR(self.pd, self.surf);
+            // Spec: (0xFFFFFFFF, 0xFFFFFFFF) indicates that the surface size will be determined by the extent of a swapchain
+            // We assign the window client dimensions.
             if (surf_caps.current_extent.width == std.math.maxInt(u32)) {
                 const draw_area = win.getFramebufferSize();
                 break :blk .{
@@ -291,7 +269,7 @@ pub const Context = struct {
             break :blk surf_caps.current_extent;
         };
 
-        const sc_ci = vk.SwapchainCreateInfoKHR{
+        self.sc = try self.dev.createSwapchainKHR(&vk.SwapchainCreateInfoKHR{
             .surface = self.surf,
             .image_format = sel_fmt.format,
             .image_extent = sc_extent,
@@ -306,8 +284,7 @@ pub const Context = struct {
             .pre_transform = .{ .identity_bit_khr = true },
             .composite_alpha = .{ .opaque_bit_khr = true },
             .clipped = vk.TRUE,
-        };
-        self.sc = try self.dev.createSwapchainKHR(&sc_ci, null);
+        }, null);
     }
 };
 
