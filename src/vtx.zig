@@ -7,7 +7,6 @@ const Allocator = std.mem.Allocator;
 pub const InitOptions = struct {
     name: [*:0]const u8 = "Default Name",
     window: glfw.Window,
-    debug: bool = true,
 };
 
 // Each API info gets merged, so this is just a convenient way to group
@@ -77,6 +76,11 @@ pub const Context = struct {
         try self.get_physical_device(ator);
         try self.create_device(ator);
         try self.create_swapchain(ator, opts.window);
+
+        // TODO
+        // get swapchain images
+        // create swapchain image views
+        // try clear color
 
         return self;
     }

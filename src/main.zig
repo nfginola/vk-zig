@@ -19,7 +19,7 @@ fn initGLFW() glfw.Window {
     }
 
     // Create our window
-    return glfw.Window.create(WIDTH, HEIGHT, "Graphics Application", null, null, .{ .client_api = .no_api }) orelse {
+    return glfw.Window.create(WIDTH, HEIGHT, "Graphics Application", null, null, .{ .client_api = .no_api, .position_x = 700, .position_y = 300 }) orelse {
         std.log.err("Failed to create Window: {?s}", .{glfw.getErrorString()});
         std.process.exit(1);
     };
