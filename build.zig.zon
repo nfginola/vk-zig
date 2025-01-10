@@ -1,0 +1,27 @@
+.{
+    .name = "gl-zig",
+    .version = "0.0.1",
+
+    .dependencies = .{
+        .@"mach-glfw" = .{
+            .url = "https://pkg.machengine.org/mach-glfw/affdd6ae6f2ac2c3b9162784bdad345c561eeeea.tar.gz",
+            .hash = "122022ea6df16700e521078c20d7d01f894c6f967e6c6ce1ea166426b4fc61667de3",
+        },
+        .vulkan_zig = .{
+            .url = "https://github.com/Snektron/vulkan-zig/archive/bb470f16dabd8195155ba9e3714dc62d7ad69add.tar.gz",
+            .hash = "12205f4e25c7102242d99dfc4f022a9c667bf4c5058b3919364f89fd882b6845d721",
+        },
+        .zigimg = .{
+            .url = "https://github.com/zigimg/zigimg/archive/2011317c068a8ffb39c962ca6246cf7783acae37.tar.gz",
+            .hash = "1220553fd331505a69dacb397f2ed6d05a727326d2d11fbd5915ef014c5e197b62da",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        // For example...
+        //"LICENSE",
+        //"README.md",
+    },
+}
