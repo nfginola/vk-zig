@@ -3,6 +3,7 @@ const std = @import("std");
 const glfw = @import("mach-glfw");
 const vk = @import("vulkan");
 const Allocator = std.mem.Allocator;
+const memh = @import("memory_helpers.zig");
 
 pub const InitOptions = struct {
     name: [*:0]const u8 = "Default Name",
@@ -30,10 +31,166 @@ const api_version = apis[0];
 const BaseDispatch = vk.BaseWrapper(apis); // Non-instance functions
 const InstanceDispatch = vk.InstanceWrapper(apis); // Instance functions
 const DeviceDispatch = vk.DeviceWrapper(apis); // Device functions (and sub-structures like queue)
+const QueueProxy = vk.QueueProxy(apis);
 
+// Types
 const Instance = vk.InstanceProxy(apis);
-const Device = vk.DeviceProxy(apis);
-const Queue = vk.QueueProxy(apis);
+pub const Device = vk.DeviceProxy(apis);
+pub const CommandBuffer = vk.CommandBufferProxy(apis);
+pub const QueueType = enum { graphics, transfer, compute };
+pub const Queue = struct { api: QueueProxy, fam: u32 };
+pub const CommandPool = struct {
+    const Self = @This();
+
+    ctx: *Context,
+    hdl: vk.CommandPool,
+
+    pub fn alloc(
+        self: *Self,
+        level: vk.CommandBufferLevel,
+        count: u32,
+    ) !CommandBuffer {
+        var cmdb: vk.CommandBuffer = undefined;
+        try self.ctx.*.dev.allocateCommandBuffers(&.{ .command_pool = self.hdl, .command_buffer_count = count, .level = level }, @ptrCast(&cmdb));
+        return CommandBuffer.init(cmdb, &self.ctx.*.devd);
+    }
+
+    pub fn reset(self: *Self, flags: vk.CommandPoolResetFlags) !void {
+        try self.ctx.*.dev.resetCommandPool(self.hdl, flags);
+    }
+};
+pub const Swapchain = struct {
+    const Self = @This();
+    pub const Next = struct {
+        idx: u32,
+        image: vk.Image,
+    };
+
+    surf: vk.SurfaceKHR,
+    hdl: vk.SwapchainKHR,
+    format: vk.SurfaceFormatKHR,
+    images: std.ArrayList(vk.Image),
+    views: std.ArrayList(vk.ImageView),
+    dev: Device,
+
+    next: Next,
+
+    pub fn getNext(self: *Self, img_acq_sem: vk.Semaphore, img_acq_fence: vk.Fence) !Next {
+        const res = try self.dev.acquireNextImageKHR(self.hdl, std.math.maxInt(u64), img_acq_sem, img_acq_fence);
+
+        self.next = .{
+            .image = self.images.items[res.image_index],
+            .idx = res.image_index,
+        };
+        return self.next;
+    }
+
+    pub fn present(self: *Self, present_queue: Queue, wait_sem: vk.Semaphore) !void {
+        _ = try present_queue.api.presentKHR(&.{
+            .p_image_indices = &.{self.next.idx},
+            .p_swapchains = &.{self.hdl},
+            .swapchain_count = 1,
+            .p_wait_semaphores = &.{wait_sem},
+            .wait_semaphore_count = 1,
+        });
+    }
+
+    fn init(self: *Self, ator: Allocator, pd: vk.PhysicalDevice, dev: Device, win: glfw.Window) !void {
+        const inst = Context.inst;
+        self.dev = dev;
+
+        var dstack = memh.Dstack.init(ator);
+        defer dstack.deinit();
+
+        if (glfw.createWindowSurface(inst.handle, win, null, &self.surf) != @intFromEnum(vk.Result.success))
+            return error.SurfaceInitFailed;
+
+        self.format = blk: {
+            const surf_fmts = try inst.getPhysicalDeviceSurfaceFormatsAllocKHR(pd, self.surf, dstack.ator());
+            for (surf_fmts) |fmt| {
+                if (fmt.format == .b8g8r8a8_srgb and fmt.color_space == .srgb_nonlinear_khr) {
+                    break :blk fmt;
+                }
+            }
+            return error.SurfFormatNotFound;
+        };
+
+        const sel_pmode: vk.PresentModeKHR = blk: {
+            const present_modes = try inst.getPhysicalDeviceSurfacePresentModesAllocKHR(pd, self.surf, dstack.ator());
+            for (present_modes) |pmode| {
+                if (pmode == .mailbox_khr)
+                    break :blk pmode;
+            }
+
+            // Fallback
+            // FIFO: Show on next vertical blank (vsync) - guaranteed
+            // Immediate: May cause tearing (No vsync)
+            break :blk vk.PresentModeKHR.fifo_khr;
+        };
+
+        const sc_extent: vk.Extent2D = blk: {
+            const surf_caps = try inst.getPhysicalDeviceSurfaceCapabilitiesKHR(pd, self.surf);
+            // Spec: (0xFFFFFFFF, 0xFFFFFFFF) indicates that the surface size will be determined by the extent of a swapchain
+            // We assign the window client dimensions.
+            if (surf_caps.current_extent.width == std.math.maxInt(u32)) {
+                const draw_area = win.getFramebufferSize();
+                break :blk .{
+                    .width = std.math.clamp(draw_area.width, surf_caps.current_extent.width, surf_caps.current_extent.width),
+                    .height = std.math.clamp(draw_area.height, surf_caps.current_extent.height, surf_caps.current_extent.height),
+                };
+            }
+
+            break :blk surf_caps.current_extent;
+        };
+
+        self.hdl = try dev.createSwapchainKHR(&vk.SwapchainCreateInfoKHR{
+            .surface = self.surf,
+            .image_format = self.format.format,
+            .image_extent = sc_extent,
+            .image_array_layers = 1,
+            .image_usage = .{ .color_attachment_bit = true, .transfer_dst_bit = true }, // allow clear color with transfer dst
+            .image_color_space = .srgb_nonlinear_khr,
+            .min_image_count = 3,
+            .present_mode = sel_pmode,
+            // TODO: must transfer ownership if queue family is different
+            // branch depending on qf
+            .image_sharing_mode = .exclusive,
+            .pre_transform = .{ .identity_bit_khr = true },
+            .composite_alpha = .{ .opaque_bit_khr = true },
+            .clipped = vk.TRUE,
+        }, null);
+
+        const images = try dev.getSwapchainImagesAllocKHR(self.hdl, dstack.ator());
+        self.images = try std.ArrayList(vk.Image).initCapacity(ator, images.len);
+        self.views = try std.ArrayList(vk.ImageView).initCapacity(ator, images.len);
+        try self.images.appendSlice(images);
+
+        for (self.images.items) |img| {
+            const ci = vk.ImageViewCreateInfo{ .image = img, .view_type = .@"2d", .format = self.format.format, .components = .{
+                .r = .identity,
+                .g = .identity,
+                .b = .identity,
+                .a = .identity,
+            }, .subresource_range = .{
+                .aspect_mask = .{ .color_bit = true },
+                .base_array_layer = 0,
+                .base_mip_level = 0,
+                .layer_count = 1,
+                .level_count = 1,
+            } };
+            const v = try self.dev.createImageView(&ci, null);
+            try self.views.append(v);
+        }
+    }
+
+    fn deinit(self: *Self) void {
+        for (self.views.items) |v| {
+            self.dev.destroyImageView(v, null);
+        }
+        self.dev.destroySwapchainKHR(self.hdl, null);
+        Context.inst.destroySurfaceKHR(self.surf, null);
+    }
+};
 
 pub const Context = struct {
     const Self = @This();
@@ -45,52 +202,38 @@ pub const Context = struct {
     var debug_msgr: ?vk.DebugUtilsMessengerEXT = null;
 
     // Per-context
-    surf: vk.SurfaceKHR = undefined,
-    pd: vk.PhysicalDevice = undefined,
-    pd_props: vk.PhysicalDeviceProperties = undefined,
-    mem_props: vk.PhysicalDeviceMemoryProperties = undefined,
+    pd: vk.PhysicalDevice,
+    pd_props: vk.PhysicalDeviceProperties,
+    mem_props: vk.PhysicalDeviceMemoryProperties,
 
-    devd: DeviceDispatch = undefined,
-    dev: Device = undefined,
+    devd: DeviceDispatch,
+    dev: Device,
 
-    gq: Queue = undefined,
-    pq: Queue = undefined,
-    tq: Queue = undefined,
-    sc: vk.SwapchainKHR = undefined,
+    // One queue of each type, no practical reason to have more.
+    queues: [@typeInfo(QueueType).@"enum".fields.len]Queue,
 
-    pub fn init(
-        ext_ator: Allocator,
+    sc: Swapchain,
+
+    pub fn create(
+        ator: Allocator,
         opts: InitOptions,
-    ) !Context {
-        var self: Self = undefined;
-        var arena = std.heap.ArenaAllocator.init(ext_ator);
-        const ator = arena.allocator();
-        defer arena.deinit();
+    ) !*Context {
+        const self = try ator.create(Self);
 
-        try create_instance(ator, opts.name);
-        try setup_debug_msgr();
+        try createInstance(ator, opts.name);
+        try setupDbgMsgr();
 
-        if (glfw.createWindowSurface(inst.handle, opts.window, null, &self.surf) != @intFromEnum(vk.Result.success))
-            return error.SurfaceInitFailed;
-
-        try self.get_physical_device(ator);
-        try self.create_device(ator);
-        try self.create_swapchain(ator, opts.window);
-
-        // TODO
-        // get swapchain images
-        // create swapchain image views
-        // try clear color
+        try self.getPhysicalDevice(ator);
+        try self.createDevice(ator);
+        try self.sc.init(ator, self.pd, self.dev, opts.window);
 
         return self;
     }
 
     pub fn deinit(self: *Self) void {
         self.dev.deviceWaitIdle() catch unreachable;
-
-        self.dev.destroySwapchainKHR(self.sc, null);
+        self.sc.deinit();
         self.dev.destroyDevice(null);
-        inst.destroySurfaceKHR(self.surf, null);
         if (bconf.validation_layer) {
             if (debug_msgr) |msgr| {
                 inst.destroyDebugUtilsMessengerEXT(msgr, null);
@@ -99,7 +242,38 @@ pub const Context = struct {
         inst.destroyInstance(null);
     }
 
-    fn create_instance(ator: Allocator, app_name: [*:0]const u8) !void {
+    pub fn getQueue(self: *Self, qtype: QueueType) Queue {
+        return self.queues[@intFromEnum(qtype)];
+    }
+
+    pub fn createCmdPool(self: *Self, ci: vk.CommandPoolCreateInfo) !CommandPool {
+        return .{
+            .ctx = self,
+            .hdl = try self.dev.createCommandPool(&ci, null),
+        };
+    }
+
+    pub fn destroyCmdPool(self: *Self, pool: CommandPool) void {
+        self.dev.destroyCommandPool(pool.hdl, null);
+    }
+
+    pub fn createFence(self: *Self, flags: vk.FenceCreateFlags) vk.Fence {
+        return self.dev.createFence(&.{ .flags = flags }, null) catch unreachable;
+    }
+
+    pub fn createSemaphore(self: *Self) vk.Semaphore {
+        return self.dev.createSemaphore(&.{}, null) catch unreachable;
+    }
+
+    pub fn destroyFence(self: *Self, hdl: vk.Fence) void {
+        self.dev.destroyFence(hdl, null);
+    }
+
+    pub fn destroySemaphore(self: *Self, hdl: vk.Semaphore) void {
+        self.dev.destroySemaphore(hdl, null);
+    }
+
+    fn createInstance(ator: Allocator, app_name: [*:0]const u8) !void {
         // Vulkan entrypoint to obtain a VkInstance provided by GLFW
         // https://registry.khronos.org/vulkan/specs/latest/man/html/vkGetInstanceProcAddr.html
         vkb = try BaseDispatch.load(@as(vk.PfnGetInstanceProcAddr, @ptrCast(&glfw.getInstanceProcAddress)));
@@ -162,7 +336,7 @@ pub const Context = struct {
         inst = Instance.init(inst_hdl, &vki);
     }
 
-    fn setup_debug_msgr() !void {
+    fn setupDbgMsgr() !void {
         if (!bconf.validation_layer)
             return;
 
@@ -173,7 +347,7 @@ pub const Context = struct {
         }, null);
     }
 
-    fn get_physical_device(self: *Self, ator: Allocator) !void {
+    fn getPhysicalDevice(self: *Self, ator: Allocator) !void {
         const pds = try inst.enumeratePhysicalDevicesAlloc(ator);
         for (pds) |pd| {
             const props = inst.getPhysicalDeviceProperties(pd);
@@ -183,27 +357,41 @@ pub const Context = struct {
                 break;
             }
         }
+        std.debug.print("Using physical device: {s}\n", .{self.pd_props.device_name});
     }
 
-    fn create_device(self: *Self, ator: Allocator) !void {
+    fn createDevice(self: *Self, ator: Allocator) !void {
+        // TODO: Redo queue search function
+        //
+        // 1. Setup configuration
+        //      - Desired Queue Family
+        //
+
+        var dstack = memh.Dstack.init(ator);
+        defer dstack.deinit();
+
         // Find suitable queue families
-        var gq_qf: u32 = undefined;
-        var pq_qf: u32 = undefined;
-        const qf_props = try inst.getPhysicalDeviceQueueFamilyPropertiesAlloc(self.pd, ator);
+        const qf_props = try inst.getPhysicalDeviceQueueFamilyPropertiesAlloc(self.pd, dstack.ator());
         for (qf_props, 0..) |qf, qf_idx| {
             if (qf.queue_flags.graphics_bit == true) {
-                gq_qf = @intCast(qf_idx);
-                pq_qf = gq_qf; // graphics queue can also be used for presenting
+                self.queues[@intFromEnum(QueueType.graphics)].fam = @intCast(qf_idx);
+            }
+            if (qf.queue_flags.compute_bit == true) {
+                self.queues[@intFromEnum(QueueType.compute)].fam = @intCast(qf_idx);
+            }
+            if (qf.queue_flags.transfer_bit == true) {
+                self.queues[@intFromEnum(QueueType.transfer)].fam = @intCast(qf_idx);
             }
         }
 
         // Get unique set of queue families
-        var set = std.AutoHashMap(u32, void).init(ator);
-        try set.put(gq_qf, {});
-        try set.put(pq_qf, {});
+        var set = std.AutoHashMap(u32, void).init(dstack.ator());
+        for (self.queues) |q| {
+            try set.put(q.fam, {});
+        }
 
         // Setup queue create infos per unique queue family
-        var q_cinfos = std.ArrayList(vk.DeviceQueueCreateInfo).init(ator);
+        var q_cinfos = std.ArrayList(vk.DeviceQueueCreateInfo).init(dstack.ator());
         var it = set.iterator();
         while (it.next()) |entry| {
             try q_cinfos.append(.{
@@ -230,65 +418,9 @@ pub const Context = struct {
 
         // Retrieve queues. Queue proxy needs Device dispatch table because
         // the QueueSubmit and similar functions are loaded into the table there
-        self.gq = Queue.init(self.dev.getDeviceQueue(gq_qf, 0), &self.devd);
-        self.pq = Queue.init(self.dev.getDeviceQueue(pq_qf, 0), &self.devd);
-    }
-
-    fn create_swapchain(self: *Self, ator: Allocator, win: glfw.Window) !void {
-        const sel_fmt: vk.SurfaceFormatKHR = blk: {
-            const surf_fmts = try inst.getPhysicalDeviceSurfaceFormatsAllocKHR(self.pd, self.surf, ator);
-            for (surf_fmts) |fmt| {
-                if (fmt.format == .b8g8r8a8_srgb and fmt.color_space == .srgb_nonlinear_khr) {
-                    break :blk fmt;
-                }
-            }
-            return error.SurfFormatNotFound;
-        };
-
-        const sel_pmode: vk.PresentModeKHR = blk: {
-            const present_modes = try inst.getPhysicalDeviceSurfacePresentModesAllocKHR(self.pd, self.surf, ator);
-            for (present_modes) |pmode| {
-                if (pmode == .mailbox_khr)
-                    break :blk pmode;
-            }
-
-            // Fallback
-            // FIFO: Show on next vertical blank (vsync) - guaranteed
-            // Immediate: May cause tearing (No vsync)
-            break :blk vk.PresentModeKHR.fifo_khr;
-        };
-
-        const sc_extent: vk.Extent2D = blk: {
-            const surf_caps = try inst.getPhysicalDeviceSurfaceCapabilitiesKHR(self.pd, self.surf);
-            // Spec: (0xFFFFFFFF, 0xFFFFFFFF) indicates that the surface size will be determined by the extent of a swapchain
-            // We assign the window client dimensions.
-            if (surf_caps.current_extent.width == std.math.maxInt(u32)) {
-                const draw_area = win.getFramebufferSize();
-                break :blk .{
-                    .width = std.math.clamp(draw_area.width, surf_caps.current_extent.width, surf_caps.current_extent.width),
-                    .height = std.math.clamp(draw_area.height, surf_caps.current_extent.height, surf_caps.current_extent.height),
-                };
-            }
-
-            break :blk surf_caps.current_extent;
-        };
-
-        self.sc = try self.dev.createSwapchainKHR(&vk.SwapchainCreateInfoKHR{
-            .surface = self.surf,
-            .image_format = sel_fmt.format,
-            .image_extent = sc_extent,
-            .image_array_layers = 1,
-            .image_usage = .{ .color_attachment_bit = true },
-            .image_color_space = .srgb_nonlinear_khr,
-            .min_image_count = 3,
-            .present_mode = sel_pmode,
-            // TODO: must transfer ownership if queue family is different
-            // branch depending on qf
-            .image_sharing_mode = .exclusive,
-            .pre_transform = .{ .identity_bit_khr = true },
-            .composite_alpha = .{ .opaque_bit_khr = true },
-            .clipped = vk.TRUE,
-        }, null);
+        for (&self.queues) |*q| {
+            q.api = QueueProxy.init(self.dev.getDeviceQueue(q.fam, 0), &self.devd);
+        }
     }
 };
 
