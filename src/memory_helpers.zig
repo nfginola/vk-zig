@@ -48,3 +48,13 @@ pub const Dstack = struct {
         self.arena.deinit();
     }
 };
+
+pub fn byteSlice(comptime T: type, slice: []T) []u8 {
+    const bytes: [*]u8 = @ptrCast(&slice);
+    return bytes[0 .. slice.len * @sizeOf(T)];
+}
+
+pub fn byteSliceC(comptime T: type, slice: []const T) []const u8 {
+    var bytes: [*]const u8 = @ptrCast(&slice);
+    return bytes[0 .. slice.len * @sizeOf(T)];
+}

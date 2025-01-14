@@ -13,12 +13,13 @@ pub const InitOptions = struct {
 // Each API info gets merged, so this is just a convenient way to group
 // Versions are additive, so we need previous ones if we enable more.
 const apis: []const vk.ApiInfo = &.{
-    // vk.features.version_1_3,
-    // vk.features.version_1_2,
+    vk.features.version_1_3,
+    vk.features.version_1_2,
     vk.features.version_1_1,
     vk.features.version_1_0,
     vk.extensions.khr_surface,
     vk.extensions.khr_swapchain,
+    vk.extensions.khr_dynamic_rendering,
 
     if (bconf.validation_layer)
         vk.extensions.ext_debug_utils
@@ -39,6 +40,11 @@ pub const Device = vk.DeviceProxy(apis);
 pub const CommandBuffer = vk.CommandBufferProxy(apis);
 pub const QueueType = enum { graphics, transfer, compute };
 pub const Queue = struct { api: QueueProxy, fam: u32 };
+pub const MemoryType = enum {
+    gpu,
+    cpu_to_gpu,
+    gpu_to_cpu,
+};
 pub const CommandPool = struct {
     const Self = @This();
 
@@ -64,6 +70,7 @@ pub const Swapchain = struct {
     pub const Next = struct {
         idx: u32,
         image: vk.Image,
+        view: vk.ImageView,
     };
 
     surf: vk.SurfaceKHR,
@@ -81,6 +88,7 @@ pub const Swapchain = struct {
         self.next = .{
             .image = self.images.items[res.image_index],
             .idx = res.image_index,
+            .view = self.views.items[res.image_index],
         };
         return self.next;
     }
@@ -152,8 +160,7 @@ pub const Swapchain = struct {
             .image_color_space = .srgb_nonlinear_khr,
             .min_image_count = 3,
             .present_mode = sel_pmode,
-            // TODO: must transfer ownership if queue family is different
-            // branch depending on qf
+            // NOTE: Assuming all queues are from the same queue family
             .image_sharing_mode = .exclusive,
             .pre_transform = .{ .identity_bit_khr = true },
             .composite_alpha = .{ .opaque_bit_khr = true },
@@ -212,6 +219,9 @@ pub const Context = struct {
     // One queue of each type, no practical reason to have more.
     queues: [@typeInfo(QueueType).@"enum".fields.len]Queue,
 
+    // Holds heap index per memory type
+    memory_heaps: [@typeInfo(MemoryType).@"enum".fields.len]u32,
+
     sc: Swapchain,
 
     pub fn create(
@@ -246,10 +256,10 @@ pub const Context = struct {
         return self.queues[@intFromEnum(qtype)];
     }
 
-    pub fn createCmdPool(self: *Self, ci: vk.CommandPoolCreateInfo) !CommandPool {
+    pub fn createCmdPool(self: *Self, qtype: QueueType, flags: vk.CommandPoolCreateFlags) !CommandPool {
         return .{
             .ctx = self,
-            .hdl = try self.dev.createCommandPool(&ci, null),
+            .hdl = try self.dev.createCommandPool(&.{ .queue_family_index = self.queues[@intFromEnum(qtype)].fam, .flags = flags }, null),
         };
     }
 
@@ -271,6 +281,29 @@ pub const Context = struct {
 
     pub fn destroySemaphore(self: *Self, hdl: vk.Semaphore) void {
         self.dev.destroySemaphore(hdl, null);
+    }
+
+    pub fn allocateMemory(self: *Self, mem_type: MemoryType, size: u64) !vk.DeviceMemory {
+        return try self.dev.allocateMemory(&vk.MemoryAllocateInfo{
+            .allocation_size = size,
+            .memory_type_index = self.memory_heaps[@intFromEnum(mem_type)],
+        }, null);
+    }
+
+    pub fn freeMemory(self: *Self, mem: vk.DeviceMemory) void {
+        self.dev.freeMemory(mem, null);
+    }
+
+    pub fn createBuffer(self: *Self, size: u64, usage: vk.BufferUsageFlags) !vk.Buffer {
+        return try self.dev.createBuffer(&vk.BufferCreateInfo{
+            .sharing_mode = .exclusive,
+            .size = size,
+            .usage = usage,
+        }, null);
+    }
+
+    pub fn destroyBuffer(self: *Self, buffer: vk.Buffer) void {
+        self.dev.destroyBuffer(buffer, null);
     }
 
     fn createInstance(ator: Allocator, app_name: [*:0]const u8) !void {
@@ -357,30 +390,56 @@ pub const Context = struct {
                 break;
             }
         }
+
+        // Get relevant memory heaps
+        self.mem_props = inst.getPhysicalDeviceMemoryProperties(self.pd);
+
+        // NOTE: Assuming that device always has coherent memory (no need for manual cache flushing/invalidation on app side)
+        for (0..self.mem_props.memory_type_count) |i| {
+            const mem = self.mem_props.memory_types[i];
+            const flags = mem.property_flags;
+            if (flags.device_local_bit == true) {
+                self.memory_heaps[@intFromEnum(MemoryType.gpu)] = @intCast(i);
+                std.debug.print("Found GPU memory! (device local)\n", .{});
+                break;
+            }
+        }
+
+        for (0..self.mem_props.memory_type_count) |i| {
+            const mem = self.mem_props.memory_types[i];
+            const flags = mem.property_flags;
+            if (flags.device_local_bit == true and flags.host_visible_bit == true and flags.host_coherent_bit == true) {
+                self.memory_heaps[@intFromEnum(MemoryType.cpu_to_gpu)] = @intCast(i);
+                std.debug.print("Found host-visible and host-coherent GPU memory! (staging)\n", .{});
+            }
+        }
+
+        for (0..self.mem_props.memory_type_count) |i| {
+            const mem = self.mem_props.memory_types[i];
+            const flags = mem.property_flags;
+            if (flags.host_visible_bit == true and flags.host_cached_bit == true and flags.host_coherent_bit == true) {
+                self.memory_heaps[@intFromEnum(MemoryType.gpu_to_cpu)] = @intCast(i);
+                std.debug.print("Found host-visible, host-cached and host-coherent GPU memory! (readback)\n", .{});
+            }
+        }
+
         std.debug.print("Using physical device: {s}\n", .{self.pd_props.device_name});
     }
 
     fn createDevice(self: *Self, ator: Allocator) !void {
-        // TODO: Redo queue search function
-        //
-        // 1. Setup configuration
-        //      - Desired Queue Family
-        //
-
         var dstack = memh.Dstack.init(ator);
         defer dstack.deinit();
 
         // Find suitable queue families
         const qf_props = try inst.getPhysicalDeviceQueueFamilyPropertiesAlloc(self.pd, dstack.ator());
         for (qf_props, 0..) |qf, qf_idx| {
-            if (qf.queue_flags.graphics_bit == true) {
+            if (qf.queue_flags.graphics_bit == true and qf.queue_flags.compute_bit == true and qf.queue_flags.transfer_bit == true) {
+                // NOTE: Ensure all from same family to reduce complexity w.r.t
+                // resource ownership transfer between families
                 self.queues[@intFromEnum(QueueType.graphics)].fam = @intCast(qf_idx);
-            }
-            if (qf.queue_flags.compute_bit == true) {
                 self.queues[@intFromEnum(QueueType.compute)].fam = @intCast(qf_idx);
-            }
-            if (qf.queue_flags.transfer_bit == true) {
                 self.queues[@intFromEnum(QueueType.transfer)].fam = @intCast(qf_idx);
+                std.debug.print("Found one single queue family that satisfies Graphics, Compute, and Transfer\n", .{});
             }
         }
 
@@ -406,10 +465,11 @@ pub const Context = struct {
 
         // Queue capabilities are dependent on queue family identified by index
         const dev = try inst.createDevice(self.pd, &vk.DeviceCreateInfo{
+            .p_next = &vk.PhysicalDeviceDynamicRenderingFeaturesKHR{ .dynamic_rendering = vk.TRUE }, // Validation layer tells us we need to enable it
             .queue_create_info_count = @intCast(q_cinfos.items.len),
             .p_queue_create_infos = @ptrCast(q_cinfos.items),
-            .enabled_extension_count = 1,
-            .pp_enabled_extension_names = &.{vk.extensions.khr_swapchain.name},
+            .enabled_extension_count = 2,
+            .pp_enabled_extension_names = &.{ vk.extensions.khr_swapchain.name, vk.extensions.khr_dynamic_rendering.name },
             .p_enabled_features = &feats,
         }, null);
 
@@ -441,3 +501,15 @@ fn debugCallback(
 
     return vk.FALSE;
 }
+
+pub const Def = struct {
+    pub fn full_subres(aspect: vk.ImageAspectFlags) vk.ImageSubresourceRange {
+        return vk.ImageSubresourceRange{
+            .aspect_mask = aspect,
+            .base_array_layer = 0,
+            .base_mip_level = 0,
+            .level_count = vk.REMAINING_ARRAY_LAYERS,
+            .layer_count = vk.REMAINING_MIP_LEVELS,
+        };
+    }
+};
