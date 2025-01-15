@@ -79,11 +79,12 @@ pub const Swapchain = struct {
     images: std.ArrayList(vk.Image),
     views: std.ArrayList(vk.ImageView),
     dev: Device,
+    extent: vk.Extent2D,
 
     next: Next,
 
-    pub fn getNext(self: *Self, img_acq_sem: vk.Semaphore, img_acq_fence: vk.Fence) !Next {
-        const res = try self.dev.acquireNextImageKHR(self.hdl, std.math.maxInt(u64), img_acq_sem, img_acq_fence);
+    pub fn getNext(self: *Self, img_acq_sem: vk.Semaphore, img_acq_fence: ?vk.Fence) !Next {
+        const res = try self.dev.acquireNextImageKHR(self.hdl, std.math.maxInt(u64), img_acq_sem, if (img_acq_fence) |f| f else .null_handle);
 
         self.next = .{
             .image = self.images.items[res.image_index],
@@ -103,18 +104,22 @@ pub const Swapchain = struct {
         });
     }
 
+    pub fn getExtent(self: *Self) vk.Extent2D {
+        return self.extent;
+    }
+
     fn init(self: *Self, ator: Allocator, pd: vk.PhysicalDevice, dev: Device, win: glfw.Window) !void {
         const inst = Context.inst;
         self.dev = dev;
 
-        var dstack = memh.Dstack.init(ator);
-        defer dstack.deinit();
+        var arena = memh.Arena.init(ator);
+        defer arena.deinit();
 
         if (glfw.createWindowSurface(inst.handle, win, null, &self.surf) != @intFromEnum(vk.Result.success))
             return error.SurfaceInitFailed;
 
         self.format = blk: {
-            const surf_fmts = try inst.getPhysicalDeviceSurfaceFormatsAllocKHR(pd, self.surf, dstack.ator());
+            const surf_fmts = try inst.getPhysicalDeviceSurfaceFormatsAllocKHR(pd, self.surf, arena.ator());
             for (surf_fmts) |fmt| {
                 if (fmt.format == .b8g8r8a8_srgb and fmt.color_space == .srgb_nonlinear_khr) {
                     break :blk fmt;
@@ -124,7 +129,7 @@ pub const Swapchain = struct {
         };
 
         const sel_pmode: vk.PresentModeKHR = blk: {
-            const present_modes = try inst.getPhysicalDeviceSurfacePresentModesAllocKHR(pd, self.surf, dstack.ator());
+            const present_modes = try inst.getPhysicalDeviceSurfacePresentModesAllocKHR(pd, self.surf, arena.ator());
             for (present_modes) |pmode| {
                 if (pmode == .mailbox_khr)
                     break :blk pmode;
@@ -136,7 +141,7 @@ pub const Swapchain = struct {
             break :blk vk.PresentModeKHR.fifo_khr;
         };
 
-        const sc_extent: vk.Extent2D = blk: {
+        self.extent = blk: {
             const surf_caps = try inst.getPhysicalDeviceSurfaceCapabilitiesKHR(pd, self.surf);
             // Spec: (0xFFFFFFFF, 0xFFFFFFFF) indicates that the surface size will be determined by the extent of a swapchain
             // We assign the window client dimensions.
@@ -154,7 +159,7 @@ pub const Swapchain = struct {
         self.hdl = try dev.createSwapchainKHR(&vk.SwapchainCreateInfoKHR{
             .surface = self.surf,
             .image_format = self.format.format,
-            .image_extent = sc_extent,
+            .image_extent = self.extent,
             .image_array_layers = 1,
             .image_usage = .{ .color_attachment_bit = true, .transfer_dst_bit = true }, // allow clear color with transfer dst
             .image_color_space = .srgb_nonlinear_khr,
@@ -167,7 +172,7 @@ pub const Swapchain = struct {
             .clipped = vk.TRUE,
         }, null);
 
-        const images = try dev.getSwapchainImagesAllocKHR(self.hdl, dstack.ator());
+        const images = try dev.getSwapchainImagesAllocKHR(self.hdl, arena.ator());
         self.images = try std.ArrayList(vk.Image).initCapacity(ator, images.len);
         self.views = try std.ArrayList(vk.ImageView).initCapacity(ator, images.len);
         try self.images.appendSlice(images);
@@ -427,11 +432,11 @@ pub const Context = struct {
     }
 
     fn createDevice(self: *Self, ator: Allocator) !void {
-        var dstack = memh.Dstack.init(ator);
-        defer dstack.deinit();
+        var arena = memh.Arena.init(ator);
+        defer arena.deinit();
 
         // Find suitable queue families
-        const qf_props = try inst.getPhysicalDeviceQueueFamilyPropertiesAlloc(self.pd, dstack.ator());
+        const qf_props = try inst.getPhysicalDeviceQueueFamilyPropertiesAlloc(self.pd, arena.ator());
         for (qf_props, 0..) |qf, qf_idx| {
             if (qf.queue_flags.graphics_bit == true and qf.queue_flags.compute_bit == true and qf.queue_flags.transfer_bit == true) {
                 // NOTE: Ensure all from same family to reduce complexity w.r.t
@@ -444,13 +449,13 @@ pub const Context = struct {
         }
 
         // Get unique set of queue families
-        var set = std.AutoHashMap(u32, void).init(dstack.ator());
+        var set = std.AutoHashMap(u32, void).init(arena.ator());
         for (self.queues) |q| {
             try set.put(q.fam, {});
         }
 
         // Setup queue create infos per unique queue family
-        var q_cinfos = std.ArrayList(vk.DeviceQueueCreateInfo).init(dstack.ator());
+        var q_cinfos = std.ArrayList(vk.DeviceQueueCreateInfo).init(arena.ator());
         var it = set.iterator();
         while (it.next()) |entry| {
             try q_cinfos.append(.{
@@ -502,7 +507,7 @@ fn debugCallback(
     return vk.FALSE;
 }
 
-pub const Def = struct {
+pub const Utils = struct {
     pub fn full_subres(aspect: vk.ImageAspectFlags) vk.ImageSubresourceRange {
         return vk.ImageSubresourceRange{
             .aspect_mask = aspect,

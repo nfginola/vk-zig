@@ -7,14 +7,18 @@ const Allocator = std.mem.Allocator;
 pub const Receipt = struct {
     start: usize,
     memory: ?[]u8 = null, // Context may optionally give memory slice for immediate filling
-    size: u64 = 0,
+    size: u64,
 };
 
 pub const UploadContext = struct {
     const Self = @This();
 
+    // We can replace managing our own stack
+    // with the FixedBufferAllocator.. but lets go manual for now
+    //
+    // - allocWithOptions for alignment
+    // - reset
     top: usize = 0,
-    // memory: [1024]u8 = undefined,
     memory: [*]u8 = undefined,
 
     vtx: *nvk.Context = undefined,
@@ -27,7 +31,7 @@ pub const UploadContext = struct {
     fence_on: bool = true,
 
     // Keep user payloads alive until submission complete
-    dstack: memh.Dstack = undefined,
+    arena: memh.Arena = undefined,
 
     pub fn push(self: *Self, data: []const u8, alignment: usize) !Receipt {
         try self.host_wait();
@@ -53,7 +57,7 @@ pub const UploadContext = struct {
     }
 
     pub fn add_work(self: *Self, comptime T: type, payload: T, cb: fn (nvk.CommandBuffer, src: vk.Buffer, *const T) void) !void {
-        const mem = try self.dstack.ator().create(T);
+        const mem = try self.arena.ator().create(T);
         mem.* = payload;
         cb(self.vk_cmdb, self.vk_buf, mem);
     }
@@ -81,7 +85,7 @@ pub const UploadContext = struct {
             _ = try self.vtx.dev.resetFences(1, &.{self.fence});
             self.fence_on = false; // do once
 
-            _ = self.dstack.arena.reset(.retain_capacity);
+            _ = self.arena.arena.reset(.retain_capacity);
             try self.vk_cmdp.reset(.{});
             self.vk_cmdb = try self.vk_cmdp.alloc(.primary, 1);
             try self.vk_cmdb.beginCommandBuffer(&vk.CommandBufferBeginInfo{ .flags = .{ .one_time_submit_bit = true } });
@@ -105,7 +109,7 @@ pub const UploadContext = struct {
             self.memory = @as([*]u8, @ptrCast(p))[0..total_size];
         }
 
-        self.dstack = memh.Dstack.init(ator);
+        self.arena = memh.Arena.init(ator);
 
         return self;
     }

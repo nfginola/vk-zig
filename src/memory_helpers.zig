@@ -2,7 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 // Shorthand for making arena from existing allocator
-pub const Dstack = struct {
+pub const Arena = struct {
     const Self = @This();
 
     // Two ways of initializing a struct with helpers here..
@@ -34,7 +34,7 @@ pub const Dstack = struct {
     //     self.ator = self.arena.allocator();
     // }
 
-    pub fn init(allocator: Allocator) Dstack {
+    pub fn init(allocator: Allocator) Self {
         return .{
             .arena = std.heap.ArenaAllocator.init(allocator),
         };

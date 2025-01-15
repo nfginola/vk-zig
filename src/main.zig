@@ -9,7 +9,7 @@ const utx = @import("vk_upload_context.zig");
 const WIDTH = 1600;
 const HEIGHT = 900;
 
-/// Default GLFW error handling callback
+/// Utilsault GLFW error handling callback
 fn errorCallback(error_code: glfw.ErrorCode, description: [:0]const u8) void {
     std.log.err("glfw: {}: {s}\n", .{ error_code, description });
 }
@@ -44,46 +44,38 @@ pub fn main() !void {
         }
     }
 
-    var dstack = memh.Dstack.init(gpa.allocator());
-    defer dstack.deinit();
+    var arena = memh.Arena.init(gpa.allocator());
+    defer arena.deinit();
 
-    var ctx = try nvk.Context.create(dstack.ator(), .{ .name = "Vulkan Engine", .window = window });
-    defer ctx.deinit();
-
-    var upload = try utx.UploadContext.create(dstack.ator(), ctx);
-    defer upload.deinit();
-
+    var ctx = try nvk.Context.create(arena.ator(), .{ .name = "Vulkan Engine", .window = window });
     const dev = ctx.dev;
     const gq = ctx.getQueue(.graphics);
-    var cmdp = try ctx.createCmdPool(.graphics, .{ .transient_bit = true });
-    const clear_finished_sem = ctx.createSemaphore();
-    const sc_img_acquired_sem = ctx.createSemaphore();
-    const sc_img_acquired_fence = ctx.createFence(.{ .signaled_bit = true });
-    const cmdb_finished_fence = ctx.createFence(.{ .signaled_bit = true });
+    defer ctx.deinit();
 
-    defer ctx.destroyFence(cmdb_finished_fence);
-    defer ctx.destroyFence(sc_img_acquired_fence);
-    defer ctx.destroySemaphore(sc_img_acquired_sem);
-    defer ctx.destroySemaphore(clear_finished_sem);
+    var upload = try utx.UploadContext.create(arena.ator(), ctx);
+    defer upload.deinit();
+
+    var cmdp = try ctx.createCmdPool(.graphics, .{ .transient_bit = true });
     defer ctx.destroyCmdPool(cmdp);
 
-    // TODO:
-    //  - Grab glslc and compile shaders.
-    //  - Make pipeline for triangle :skull:
-    //
+    const clear_finished_sem = ctx.createSemaphore();
+    const sc_img_acquired_sem = ctx.createSemaphore();
+    const cmdb_finished_fence = ctx.createFence(.{ .signaled_bit = true });
+    defer ctx.destroySemaphore(clear_finished_sem);
+    defer ctx.destroySemaphore(sc_img_acquired_sem);
+    defer ctx.destroyFence(cmdb_finished_fence);
 
     // Grab buffer memory
     const vmem = try ctx.allocateMemory(.gpu, 64_000);
     const imem = try ctx.allocateMemory(.gpu, 64_000);
-    defer ctx.freeMemory(vmem);
-    defer ctx.freeMemory(imem);
     const vb = try ctx.createBuffer(64_000, .{ .vertex_buffer_bit = true, .transfer_dst_bit = true });
     const ib = try ctx.createBuffer(64_000, .{ .index_buffer_bit = true, .transfer_dst_bit = true });
-    defer ctx.destroyBuffer(vb);
-    defer ctx.destroyBuffer(ib);
     _ = try ctx.dev.bindBufferMemory(vb, vmem, 0);
     _ = try ctx.dev.bindBufferMemory(ib, imem, 0);
-
+    defer ctx.freeMemory(vmem);
+    defer ctx.freeMemory(imem);
+    defer ctx.destroyBuffer(vb);
+    defer ctx.destroyBuffer(ib);
     {
         // Upload tri and index
         const Vertex = struct {
@@ -118,27 +110,216 @@ pub fn main() !void {
         try upload.host_wait();
     }
 
+    // TODO:
+    //  x Grab glslc
+    //  - Write triangle vs and fs shader in GLSL
+    //      - vs just passthrough NDC verts and uvs
+    //      - fs just outputs uv as colors
+    //  - Compile shaders to SPIR-V
+    //  - Create shader module
+    //      - Verifies that shaders are O.K! :)
+    //
+    //  - Make pipeline for triangle
+    //
+    //  - Move swapchain to vsc.zig
+    //  - Refactor vtx.zig to not have to need a struct for variables and functions
+    //      (Look at Allocator as example)
+    //
+
+    // read spirv file
+    // create shader module
+    // setup pipeline
+    const vs = try std.fs.cwd().openFile("ext/shaders/tri.spv", .{});
+    const fs = try std.fs.cwd().openFile("ext/shaders/pass.spv", .{});
+    defer vs.close();
+    defer fs.close();
+    const vs_data = try vs.reader().readAllAlloc(arena.ator(), std.math.maxInt(usize));
+    const fs_data = try fs.reader().readAllAlloc(arena.ator(), std.math.maxInt(usize));
+
+    const vs_mod = try ctx.dev.createShaderModule(&.{
+        .code_size = vs_data.len,
+        .p_code = @ptrCast(@alignCast(vs_data.ptr)),
+    }, null);
+    const fs_mod = try ctx.dev.createShaderModule(&.{
+        .code_size = fs_data.len,
+        .p_code = @ptrCast(@alignCast(fs_data.ptr)),
+    }, null);
+    std.debug.print("{any}, {any}\n", .{ vs_mod, fs_mod });
+
+    const target_details = vk.PipelineRenderingCreateInfoKHR{
+        .color_attachment_count = 1,
+        .p_color_attachment_formats = &.{ctx.sc.format.format},
+        .view_mask = 0,
+        .depth_attachment_format = .undefined,
+        .stencil_attachment_format = .undefined,
+    };
+
+    // TODO
+    const p_layout = try ctx.dev.createPipelineLayout(&vk.PipelineLayoutCreateInfo{}, null);
+
+    var pipes: [1]vk.Pipeline = undefined;
+    _ = try ctx.dev.createGraphicsPipelines(.null_handle, pipes.len, &.{
+        vk.GraphicsPipelineCreateInfo{
+            .p_next = &target_details,
+            .stage_count = 2,
+            .p_stages = &.{
+                vk.PipelineShaderStageCreateInfo{
+                    .module = vs_mod,
+                    .stage = .{ .vertex_bit = true },
+                    .p_name = "main",
+                },
+                vk.PipelineShaderStageCreateInfo{
+                    .module = fs_mod,
+                    .stage = .{ .fragment_bit = true },
+                    .p_name = "main",
+                },
+            },
+            .p_vertex_input_state = &vk.PipelineVertexInputStateCreateInfo{},
+            .p_input_assembly_state = &vk.PipelineInputAssemblyStateCreateInfo{
+                .topology = .triangle_list,
+                .primitive_restart_enable = vk.FALSE,
+            },
+            .p_multisample_state = &vk.PipelineMultisampleStateCreateInfo{
+                .rasterization_samples = .{ .@"1_bit" = true },
+                .sample_shading_enable = vk.FALSE, // TODO: dont know what this is
+                .min_sample_shading = 0, // TODO dont know what this is
+                .alpha_to_coverage_enable = vk.FALSE, // TODO dont know what this is
+                .alpha_to_one_enable = vk.FALSE, // TODO dont know what this is
+            },
+            .p_depth_stencil_state = &vk.PipelineDepthStencilStateCreateInfo{
+                .depth_test_enable = vk.FALSE,
+                .depth_write_enable = vk.FALSE,
+                .depth_compare_op = .always,
+                .depth_bounds_test_enable = vk.FALSE,
+                .stencil_test_enable = vk.FALSE,
+                .front = std.mem.zeroInit(vk.StencilOpState, .{}),
+                .back = std.mem.zeroInit(vk.StencilOpState, .{}),
+                .min_depth_bounds = 0.0,
+                .max_depth_bounds = 1.0,
+            },
+            .p_rasterization_state = &vk.PipelineRasterizationStateCreateInfo{
+                .cull_mode = .{ .back_bit = true },
+                .front_face = .counter_clockwise,
+                .polygon_mode = .fill,
+                .depth_clamp_enable = vk.TRUE, // TODO what is this
+                .rasterizer_discard_enable = vk.FALSE, // TODO what is this
+                .depth_bias_enable = vk.FALSE,
+                .depth_bias_clamp = 0.0,
+                .depth_bias_constant_factor = 0.0,
+                .depth_bias_slope_factor = 0.0,
+                .line_width = 1.0,
+            },
+            .p_color_blend_state = &vk.PipelineColorBlendStateCreateInfo{
+                .logic_op_enable = vk.FALSE,
+                .logic_op = .clear,
+                .attachment_count = 1,
+                .blend_constants = .{ 0.0, 0.0, 0.0, 0.0 },
+                .p_attachments = &.{
+                    vk.PipelineColorBlendAttachmentState{
+                        .blend_enable = vk.FALSE,
+                        .color_write_mask = .{ .r_bit = true, .g_bit = true, .b_bit = true },
+                        .src_alpha_blend_factor = .one,
+                        .alpha_blend_op = .add,
+                        .color_blend_op = .add,
+                        .dst_alpha_blend_factor = .one,
+                        .dst_color_blend_factor = .one,
+                        .src_color_blend_factor = .one,
+                    },
+                },
+            },
+            .p_viewport_state = &vk.PipelineViewportStateCreateInfo{
+                .scissor_count = 1,
+                .viewport_count = 1,
+                .p_viewports = &.{
+                    vk.Viewport{
+                        .x = 0,
+                        .y = 0,
+                        .width = @floatFromInt(ctx.sc.getExtent().width),
+                        .height = @floatFromInt(ctx.sc.getExtent().height),
+                        .min_depth = 0.0,
+                        .max_depth = 1.0,
+                    },
+                },
+                .p_scissors = &.{
+                    vk.Rect2D{
+                        .offset = .{
+                            .x = 0,
+                            .y = 0,
+                        },
+                        .extent = ctx.sc.getExtent(),
+                    },
+                },
+            },
+            .layout = p_layout,
+            .subpass = 0,
+            .base_pipeline_handle = .null_handle,
+            .base_pipeline_index = 0,
+        },
+    }, null, &pipes);
+
+    //
+    // OPTIONAL:
+    //
+    // Render Graph: Setup chronological order
+    //
+    // const pass = graph.createPass("name");
+    // pass.addColor(0, vk.RenderingAttachmentInfoKHR, format);
+    // pass.addColor(1, vk.RenderingAttachmentInfoKHR, format);
+    // pass.addColor(2, vk.RenderingAttachmentInfoKHR, format);
+    // pass.addDepth(vk.RenderingAttachmentInfoKHR, format);
+    // pass.addStencil(vk.RenderingAttachmentInfoKHR, format);
+    //
+    // const pipeline = create_pipeline(pass.pipeline_compat, ...);
+    // ...or
+    // const pipeline = create_pipeline(graph.getPass("name").pipe_compat, ...);
+    //
+    // so:
+    // 1) Graph setup
+    //      - Declare all resource usage
+    //      - Declare logic
+    //          - Payload should containg ptr to const struct which
+    //            contains data and pipelines relevant for this pass
+    //
+    // 2) Pipeline setup
+    //      - Create pipelines based on consuming pass
+    //          (Validation layer should verify compatibility)
+    //
+    //
+    // RG creation:
+    //    for each pass in reverse chronological order:
+    //      dst = pass
+    //      for each pass-1 in reverse chronological order:
+    //          src = pass-1
+    //
+    //          // complicated.. check our impl from Rogue Robots
+    //
+    //          if (dst.read intersect src.write)       // RAW
+    //          if (dst.write intersect src.write)      // WAW
+    //          if (dst.write intersect src.read)       // RAW
+    //              put dep on dag
+    //              put barrier on each res right before dst (JIT)
+
     while (!window.shouldClose()) {
         if (window.getKey(glfw.Key.escape) == glfw.Action.press) {
             break;
         }
 
-        _ = try dev.waitForFences(2, &.{ sc_img_acquired_fence, cmdb_finished_fence }, vk.TRUE, std.math.maxInt(u64));
-        try dev.resetFences(2, &.{ sc_img_acquired_fence, cmdb_finished_fence });
-        const sc_next = try ctx.sc.getNext(sc_img_acquired_sem, sc_img_acquired_fence);
+        _ = try dev.waitForFences(1, &.{cmdb_finished_fence}, vk.TRUE, std.math.maxInt(u64));
+        try dev.resetFences(1, &.{cmdb_finished_fence});
+        const sc_next = try ctx.sc.getNext(sc_img_acquired_sem, null);
 
         try cmdp.reset(.{});
         var cmdb = try cmdp.alloc(.primary, 1);
         try cmdb.beginCommandBuffer(&.{ .flags = .{ .one_time_submit_bit = true } });
 
-        cmdb.pipelineBarrier(.{ .bottom_of_pipe_bit = true }, .{ .color_attachment_output_bit = true }, .{ .by_region_bit = true }, 0, null, 0, null, 1, &.{
+        cmdb.pipelineBarrier(.{ .bottom_of_pipe_bit = true }, .{ .color_attachment_output_bit = true }, .{}, 0, null, 0, null, 1, &.{
             vk.ImageMemoryBarrier{
                 .old_layout = .undefined,
                 .new_layout = .color_attachment_optimal,
                 .src_access_mask = .{},
                 .dst_access_mask = .{ .color_attachment_write_bit = true },
                 .image = sc_next.image,
-                .subresource_range = nvk.Def.full_subres(.{ .color_bit = true }),
+                .subresource_range = nvk.Utils.full_subres(.{ .color_bit = true }),
                 .src_queue_family_index = gq.fam,
                 .dst_queue_family_index = gq.fam,
             },
@@ -162,16 +343,18 @@ pub fn main() !void {
             .view_mask = 0,
         };
         cmdb.beginRenderingKHR(&rinfo);
+        cmdb.bindPipeline(.graphics, pipes[0]);
+        cmdb.draw(3, 1, 0, 0);
         cmdb.endRenderingKHR();
 
-        cmdb.pipelineBarrier(.{ .color_attachment_output_bit = true }, .{ .top_of_pipe_bit = true }, .{ .by_region_bit = true }, 0, null, 0, null, 1, &.{
+        cmdb.pipelineBarrier(.{ .color_attachment_output_bit = true }, .{ .top_of_pipe_bit = true }, .{}, 0, null, 0, null, 1, &.{
             vk.ImageMemoryBarrier{
                 .old_layout = .color_attachment_optimal,
                 .new_layout = .present_src_khr,
                 .src_access_mask = .{ .color_attachment_write_bit = true },
                 .dst_access_mask = .{},
                 .image = sc_next.image,
-                .subresource_range = nvk.Def.full_subres(.{ .color_bit = true }),
+                .subresource_range = nvk.Utils.full_subres(.{ .color_bit = true }),
                 .src_queue_family_index = gq.fam,
                 .dst_queue_family_index = gq.fam,
             },
