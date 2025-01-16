@@ -28,6 +28,13 @@ const apis: []const vk.ApiInfo = &.{
 };
 const api_version = apis[0];
 
+// TODO: these dispatch tables and anything compile time renamed or types should be
+// placed in their own .zig so that multiple vk files can speak in the same language
+// (such as for dividing this file into ctx + separate swapchain file)
+//
+// vk_types.zig
+//
+
 // Dispatch tables
 const BaseDispatch = vk.BaseWrapper(apis); // Non-instance functions
 const InstanceDispatch = vk.InstanceWrapper(apis); // Instance functions
@@ -39,7 +46,7 @@ const Instance = vk.InstanceProxy(apis);
 pub const Device = vk.DeviceProxy(apis);
 pub const CommandBuffer = vk.CommandBufferProxy(apis);
 pub const QueueType = enum { graphics, transfer, compute };
-pub const Queue = struct { api: QueueProxy, fam: u32 };
+pub const Queue = struct { api: QueueProxy = undefined, fam: ?u32 = null, id: u32 = 0 };
 pub const MemoryType = enum {
     gpu,
     cpu_to_gpu,
@@ -222,7 +229,7 @@ pub const Context = struct {
     dev: Device,
 
     // One queue of each type, no practical reason to have more.
-    queues: [@typeInfo(QueueType).@"enum".fields.len]Queue,
+    queues: [@typeInfo(QueueType).@"enum".fields.len]Queue = undefined,
 
     // Holds heap index per memory type
     memory_heaps: [@typeInfo(MemoryType).@"enum".fields.len]u32,
@@ -264,7 +271,7 @@ pub const Context = struct {
     pub fn createCmdPool(self: *Self, qtype: QueueType, flags: vk.CommandPoolCreateFlags) !CommandPool {
         return .{
             .ctx = self,
-            .hdl = try self.dev.createCommandPool(&.{ .queue_family_index = self.queues[@intFromEnum(qtype)].fam, .flags = flags }, null),
+            .hdl = try self.dev.createCommandPool(&.{ .queue_family_index = self.queues[@intFromEnum(qtype)].fam.?, .flags = flags }, null),
         };
     }
 
@@ -435,23 +442,50 @@ pub const Context = struct {
         var arena = memh.Arena.init(ator);
         defer arena.deinit();
 
+        self.queues = .{.{}} ** @typeInfo(QueueType).@"enum".fields.len;
+
+        // Ensure unique set of queue families
+        var set = std.AutoHashMap(u32, void).init(arena.ator());
+
         // Find suitable queue families
+        // Use distinct queue family for each (Graphics, Compute, Transfer)
         const qf_props = try inst.getPhysicalDeviceQueueFamilyPropertiesAlloc(self.pd, arena.ator());
         for (qf_props, 0..) |qf, qf_idx| {
-            if (qf.queue_flags.graphics_bit == true and qf.queue_flags.compute_bit == true and qf.queue_flags.transfer_bit == true) {
-                // NOTE: Ensure all from same family to reduce complexity w.r.t
-                // resource ownership transfer between families
-                self.queues[@intFromEnum(QueueType.graphics)].fam = @intCast(qf_idx);
-                self.queues[@intFromEnum(QueueType.compute)].fam = @intCast(qf_idx);
-                self.queues[@intFromEnum(QueueType.transfer)].fam = @intCast(qf_idx);
-                std.debug.print("Found one single queue family that satisfies Graphics, Compute, and Transfer\n", .{});
+            if (set.contains(@intCast(qf_idx)))
+                continue;
+
+            const gfx = &self.queues[@intFromEnum(QueueType.graphics)];
+            const compute = &self.queues[@intFromEnum(QueueType.compute)];
+            const transfer = &self.queues[@intFromEnum(QueueType.transfer)];
+
+            if (gfx.fam == null and qf.queue_flags.graphics_bit == true) {
+                gfx.*.fam = @intCast(qf_idx);
+                std.debug.print("Found distinct queue family ({}) Graphics: {any}\n", .{ qf_idx, qf.queue_flags });
+                try set.put(@intCast(qf_idx), {});
+            } else if (compute.fam == null and qf.queue_flags.compute_bit == true) {
+                compute.*.fam = @intCast(qf_idx);
+                std.debug.print("Found distinct queue family ({}) Compute: {any}\n", .{ qf_idx, qf.queue_flags });
+                try set.put(@intCast(qf_idx), {});
+            } else if (transfer.fam == null and qf.queue_flags.transfer_bit == true) {
+                transfer.*.fam = @intCast(qf_idx);
+                std.debug.print("Found distinct queue family ({}) Transfer: {any}\n", .{ qf_idx, qf.queue_flags });
+                try set.put(@intCast(qf_idx), {});
             }
         }
 
-        // Get unique set of queue families
-        var set = std.AutoHashMap(u32, void).init(arena.ator());
-        for (self.queues) |q| {
-            try set.put(q.fam, {});
+        // If distinct queue family was not found, use graphics family as fallback
+        // and create a distinct queue, preserving any potential async nature by
+        // calling operations
+        var fallback_gfx_queues: u32 = 0;
+        const gfx_fam = self.queues[@intFromEnum(QueueType.graphics)].fam.?;
+        for (&self.queues, 0..) |*q, i| {
+            const kind: QueueType = @enumFromInt(i);
+            if (q.fam == null) {
+                q.fam = self.queues[@intFromEnum(QueueType.graphics)].fam.?;
+                std.debug.print("Distinct queue family was not found for {}, using family ({}) as fallback\n", .{ kind, q.fam.? });
+                fallback_gfx_queues += 1;
+                q.id = fallback_gfx_queues;
+            }
         }
 
         // Setup queue create infos per unique queue family
@@ -459,7 +493,7 @@ pub const Context = struct {
         var it = set.iterator();
         while (it.next()) |entry| {
             try q_cinfos.append(.{
-                .queue_count = 1,
+                .queue_count = 1 + if (entry.key_ptr.* == gfx_fam) fallback_gfx_queues else 0,
                 .queue_family_index = entry.key_ptr.*,
                 .p_queue_priorities = &.{1.0},
             });
@@ -470,7 +504,7 @@ pub const Context = struct {
 
         // Queue capabilities are dependent on queue family identified by index
         const dev = try inst.createDevice(self.pd, &vk.DeviceCreateInfo{
-            .p_next = &vk.PhysicalDeviceDynamicRenderingFeaturesKHR{ .dynamic_rendering = vk.TRUE }, // Validation layer tells us we need to enable it
+            .p_next = &vk.PhysicalDeviceDynamicRenderingFeaturesKHR{ .dynamic_rendering = vk.TRUE }, // VL says we need to enable it here for dynamic rendering
             .queue_create_info_count = @intCast(q_cinfos.items.len),
             .p_queue_create_infos = @ptrCast(q_cinfos.items),
             .enabled_extension_count = 2,
@@ -484,7 +518,7 @@ pub const Context = struct {
         // Retrieve queues. Queue proxy needs Device dispatch table because
         // the QueueSubmit and similar functions are loaded into the table there
         for (&self.queues) |*q| {
-            q.api = QueueProxy.init(self.dev.getDeviceQueue(q.fam, 0), &self.devd);
+            q.api = QueueProxy.init(self.dev.getDeviceQueue(q.fam.?, q.id), &self.devd);
         }
     }
 };

@@ -124,10 +124,12 @@ pub fn main() !void {
     //  - Refactor vtx.zig to not have to need a struct for variables and functions
     //      (Look at Allocator as example)
     //
+    //  - Use input layout and VB/IB to render triangle
+    //      - Require DescriptorSetLayout, and similar
 
-    // read spirv file
-    // create shader module
-    // setup pipeline
+    //
+    //  - Use Right Handed coordinate system with Z up
+
     const vs = try std.fs.cwd().openFile("ext/shaders/tri.spv", .{});
     const fs = try std.fs.cwd().openFile("ext/shaders/pass.spv", .{});
     defer vs.close();
@@ -154,7 +156,6 @@ pub fn main() !void {
         .stencil_attachment_format = .undefined,
     };
 
-    // TODO
     const p_layout = try ctx.dev.createPipelineLayout(&vk.PipelineLayoutCreateInfo{}, null);
     defer ctx.dev.destroyPipelineLayout(p_layout, null);
 
@@ -322,8 +323,8 @@ pub fn main() !void {
                 .dst_access_mask = .{ .color_attachment_write_bit = true },
                 .image = sc_next.image,
                 .subresource_range = nvk.Utils.full_subres(.{ .color_bit = true }),
-                .src_queue_family_index = gq.fam,
-                .dst_queue_family_index = gq.fam,
+                .src_queue_family_index = gq.fam.?,
+                .dst_queue_family_index = gq.fam.?,
             },
         });
 
@@ -357,8 +358,8 @@ pub fn main() !void {
                 .dst_access_mask = .{},
                 .image = sc_next.image,
                 .subresource_range = nvk.Utils.full_subres(.{ .color_bit = true }),
-                .src_queue_family_index = gq.fam,
-                .dst_queue_family_index = gq.fam,
+                .src_queue_family_index = gq.fam.?,
+                .dst_queue_family_index = gq.fam.?,
             },
         });
 
