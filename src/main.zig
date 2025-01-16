@@ -52,31 +52,26 @@ pub fn main() !void {
     const gq = ctx.getQueue(.graphics);
     defer ctx.deinit();
 
-    var upload = try utx.UploadContext.create(arena.ator(), ctx);
+    var upload = try utx.UploadContext.create(arena.ator(), ctx, .graphics);
     defer upload.deinit();
 
-    var cmdp = try ctx.createCmdPool(.graphics, .{ .transient_bit = true });
-    defer ctx.destroyCmdPool(cmdp);
+    // Vulkan resources lifetime arena
+    var varena = try nvk.Context.createArena(arena.ator());
+    defer varena.deinit();
 
-    const clear_finished_sem = ctx.createSemaphore();
-    const sc_img_acquired_sem = ctx.createSemaphore();
-    const cmdb_finished_fence = ctx.createFence(.{ .signaled_bit = true });
-    defer ctx.destroySemaphore(clear_finished_sem);
-    defer ctx.destroySemaphore(sc_img_acquired_sem);
-    defer ctx.destroyFence(cmdb_finished_fence);
-
-    // Grab buffer memory
-    const vmem = try ctx.allocateMemory(.gpu, 64_000);
-    const imem = try ctx.allocateMemory(.gpu, 64_000);
-    const vb = try ctx.createBuffer(64_000, .{ .vertex_buffer_bit = true, .transfer_dst_bit = true });
-    const ib = try ctx.createBuffer(64_000, .{ .index_buffer_bit = true, .transfer_dst_bit = true });
-    _ = try ctx.dev.bindBufferMemory(vb, vmem, 0);
-    _ = try ctx.dev.bindBufferMemory(ib, imem, 0);
-    defer ctx.freeMemory(vmem);
-    defer ctx.freeMemory(imem);
-    defer ctx.destroyBuffer(vb);
-    defer ctx.destroyBuffer(ib);
+    var cmdp = try ctx.createCmdPool(varena, .graphics, .{ .transient_bit = true });
+    const clear_finished_sem = try ctx.createSemaphore(varena);
+    const sc_img_acquired_sem = try ctx.createSemaphore(varena);
+    const cmdb_finished_fence = try ctx.createFence(varena, .{ .signaled_bit = true });
+    const vb = try ctx.createBuffer(varena, 64_000, .{ .vertex_buffer_bit = true, .transfer_dst_bit = true });
+    const ib = try ctx.createBuffer(varena, 64_000, .{ .index_buffer_bit = true, .transfer_dst_bit = true });
     {
+        // Grab buffer memory
+        const vmem = try ctx.allocateMemory(varena, .gpu, 64_000);
+        const imem = try ctx.allocateMemory(varena, .gpu, 64_000);
+        _ = try ctx.dev.bindBufferMemory(vb.hdl, vmem, 0);
+        _ = try ctx.dev.bindBufferMemory(ib.hdl, imem, 0);
+
         // Upload tri and index
         const Vertex = struct {
             x: f32,
@@ -93,22 +88,18 @@ pub fn main() !void {
         const indices = [_]u32{ 0, 1, 2 };
         const r1 = try upload.push(memh.byteSliceC(Vertex, vertices[0..]), 4);
         const r2 = try upload.push(memh.byteSliceC(u32, indices[0..]), 4);
-
-        const Payload = struct {
-            dst_vb: vk.Buffer,
-            dst_ib: vk.Buffer,
-            vb_r: utx.Receipt,
-            ib_r: utx.Receipt,
-        };
-        const my_payload = Payload{ .dst_vb = vb, .dst_ib = ib, .vb_r = r1, .ib_r = r2 };
-        try upload.add_work(Payload, my_payload, struct {
-            pub fn work(cmdb: nvk.CommandBuffer, src: vk.Buffer, payload: *const Payload) void {
-                cmdb.copyBuffer(src, payload.dst_vb, 1, &.{vk.BufferCopy{ .dst_offset = 0, .src_offset = payload.vb_r.start, .size = payload.vb_r.size }});
-                cmdb.copyBuffer(src, payload.dst_ib, 1, &.{vk.BufferCopy{ .dst_offset = 0, .src_offset = payload.ib_r.start, .size = payload.ib_r.size }});
-            }
-        }.work);
+        try upload.copy_to_buffer(vb, r1);
+        try upload.copy_to_buffer(ib, r2);
+        _ = try upload.submit(null);
         try upload.host_wait();
     }
+
+    const vs = try std.fs.cwd().openFile("res/shaders/compiled/tri.spv", .{});
+    const fs = try std.fs.cwd().openFile("res/shaders/compiled/pass.spv", .{});
+    defer vs.close();
+    defer fs.close();
+    const vs_mod = try ctx.createShaderModule(varena, try vs.reader().readAllAlloc(arena.ator(), std.math.maxInt(usize)));
+    const fs_mod = try ctx.createShaderModule(varena, try fs.reader().readAllAlloc(arena.ator(), std.math.maxInt(usize)));
 
     // TODO:
     //  x Grab glslc
@@ -119,6 +110,14 @@ pub fn main() !void {
     //  x Create shader module
     //      - Verifies that shaders are O.K! :)
     //  x Make pipeline for triangle
+    //  x Support multi-queue and multi-family. (One queue per distinct family, or fallback to gfx queues)
+    //
+    //  x Support automatic qf ownership transfer from dedicated transfer queue
+    //
+    //  x Replace vk.Buffer with custom nvk.Buffer
+    //      x Prep for VMA
+    //
+    //  x Garbage can (arena for vk resources)
     //
     //  - Move swapchain to vsc.zig
     //  - Refactor vtx.zig to not have to need a struct for variables and functions
@@ -126,27 +125,11 @@ pub fn main() !void {
     //
     //  - Use input layout and VB/IB to render triangle
     //      - Require DescriptorSetLayout, and similar
-
     //
     //  - Use Right Handed coordinate system with Z up
 
-    const vs = try std.fs.cwd().openFile("ext/shaders/tri.spv", .{});
-    const fs = try std.fs.cwd().openFile("ext/shaders/pass.spv", .{});
-    defer vs.close();
-    defer fs.close();
-    const vs_data = try vs.reader().readAllAlloc(arena.ator(), std.math.maxInt(usize));
-    const fs_data = try fs.reader().readAllAlloc(arena.ator(), std.math.maxInt(usize));
-
-    const vs_mod = try ctx.dev.createShaderModule(&.{
-        .code_size = vs_data.len,
-        .p_code = @ptrCast(@alignCast(vs_data.ptr)),
-    }, null);
-    const fs_mod = try ctx.dev.createShaderModule(&.{
-        .code_size = fs_data.len,
-        .p_code = @ptrCast(@alignCast(fs_data.ptr)),
-    }, null);
-    defer ctx.dev.destroyShaderModule(vs_mod, null);
-    defer ctx.dev.destroyShaderModule(fs_mod, null);
+    const p_layout = try ctx.dev.createPipelineLayout(&vk.PipelineLayoutCreateInfo{}, null);
+    defer ctx.dev.destroyPipelineLayout(p_layout, null);
 
     const target_details = vk.PipelineRenderingCreateInfoKHR{
         .color_attachment_count = 1,
@@ -155,10 +138,6 @@ pub fn main() !void {
         .depth_attachment_format = .undefined,
         .stencil_attachment_format = .undefined,
     };
-
-    const p_layout = try ctx.dev.createPipelineLayout(&vk.PipelineLayoutCreateInfo{}, null);
-    defer ctx.dev.destroyPipelineLayout(p_layout, null);
-
     var pipes: [1]vk.Pipeline = undefined;
     _ = try ctx.dev.createGraphicsPipelines(.null_handle, pipes.len, &.{
         vk.GraphicsPipelineCreateInfo{

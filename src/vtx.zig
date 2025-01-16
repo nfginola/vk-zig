@@ -45,8 +45,18 @@ const QueueProxy = vk.QueueProxy(apis);
 const Instance = vk.InstanceProxy(apis);
 pub const Device = vk.DeviceProxy(apis);
 pub const CommandBuffer = vk.CommandBufferProxy(apis);
-pub const QueueType = enum { graphics, transfer, compute };
+pub const QueueType = enum {
+    graphics,
+    compute,
+    transfer,
+
+    // Dedicated queues used for queue ownership transfer to the
+    // appropriate queue family
+    transfer_graphics,
+    transfer_compute,
+};
 pub const Queue = struct { api: QueueProxy = undefined, fam: ?u32 = null, id: u32 = 0 };
+pub const Buffer = struct { hdl: vk.Buffer };
 pub const MemoryType = enum {
     gpu,
     cpu_to_gpu,
@@ -172,7 +182,6 @@ pub const Swapchain = struct {
             .image_color_space = .srgb_nonlinear_khr,
             .min_image_count = 3,
             .present_mode = sel_pmode,
-            // NOTE: Assuming all queues are from the same queue family
             .image_sharing_mode = .exclusive,
             .pre_transform = .{ .identity_bit_khr = true },
             .composite_alpha = .{ .opaque_bit_khr = true },
@@ -264,27 +273,88 @@ pub const Context = struct {
         inst.destroyInstance(null);
     }
 
+    pub fn createArena(ator: Allocator) !*VulkanArena {
+        return VulkanArena.create(ator);
+    }
+
+    /// Each queue type should be treated as distinct queues from a distinct family.
+    /// As fallback, if no distinct family can be found, they will use graphics family.
     pub fn getQueue(self: *Self, qtype: QueueType) Queue {
         return self.queues[@intFromEnum(qtype)];
     }
 
-    pub fn createCmdPool(self: *Self, qtype: QueueType, flags: vk.CommandPoolCreateFlags) !CommandPool {
-        return .{
+    pub fn createShaderModule(self: *Self, maybe_arena: ?*VulkanArena, binary: []u8) !vk.ShaderModule {
+        const mod = try self.dev.createShaderModule(&.{
+            .code_size = binary.len,
+            .p_code = @ptrCast(@alignCast(binary.ptr)),
+        }, null);
+
+        // If user passes arena, they are expected to clean up only using the arena
+        if (maybe_arena) |varena| {
+            try varena.add(struct {
+                pub fn destroy(ctx: *Context, resource: *anyopaque) void {
+                    const res: *vk.ShaderModule = @ptrCast(@alignCast(resource));
+                    ctx.dev.destroyShaderModule(res.*, null);
+                }
+            }.destroy, @ptrCast(self), @ptrCast(try varena.alloc(vk.ShaderModule, mod)));
+        }
+
+        return mod;
+    }
+
+    pub fn createCmdPool(self: *Self, maybe_arena: ?*VulkanArena, qtype: QueueType, flags: vk.CommandPoolCreateFlags) !CommandPool {
+        const pool = CommandPool{
             .ctx = self,
             .hdl = try self.dev.createCommandPool(&.{ .queue_family_index = self.queues[@intFromEnum(qtype)].fam.?, .flags = flags }, null),
         };
+
+        // If user passes arena, they are expected to clean up only using the arena
+        if (maybe_arena) |varena| {
+            try varena.add(struct {
+                pub fn destroy(ctx: *Context, resource: *anyopaque) void {
+                    const res: *CommandPool = @ptrCast(@alignCast(resource));
+                    ctx.destroyCmdPool(res.*);
+                }
+            }.destroy, @ptrCast(self), @ptrCast(try varena.alloc(CommandPool, pool)));
+        }
+
+        return pool;
     }
 
     pub fn destroyCmdPool(self: *Self, pool: CommandPool) void {
         self.dev.destroyCommandPool(pool.hdl, null);
     }
 
-    pub fn createFence(self: *Self, flags: vk.FenceCreateFlags) vk.Fence {
-        return self.dev.createFence(&.{ .flags = flags }, null) catch unreachable;
+    pub fn createFence(self: *Self, maybe_arena: ?*VulkanArena, flags: vk.FenceCreateFlags) !vk.Fence {
+        const f = try self.dev.createFence(&.{ .flags = flags }, null);
+
+        // If user passes arena, they are expected to clean up only using the arena
+        if (maybe_arena) |varena| {
+            try varena.add(struct {
+                pub fn destroy(ctx: *Context, resource: *anyopaque) void {
+                    const res: *vk.Fence = @ptrCast(@alignCast(resource));
+                    ctx.destroyFence(res.*);
+                }
+            }.destroy, @ptrCast(self), @ptrCast(try varena.alloc(vk.Fence, f)));
+        }
+
+        return f;
     }
 
-    pub fn createSemaphore(self: *Self) vk.Semaphore {
-        return self.dev.createSemaphore(&.{}, null) catch unreachable;
+    pub fn createSemaphore(self: *Self, maybe_arena: ?*VulkanArena) !vk.Semaphore {
+        const sem = try self.dev.createSemaphore(&.{}, null);
+
+        // If user passes arena, they are expected to clean up only using the arena
+        if (maybe_arena) |varena| {
+            try varena.add(struct {
+                pub fn destroy(ctx: *Context, resource: *anyopaque) void {
+                    const res: *vk.Semaphore = @ptrCast(@alignCast(resource));
+                    ctx.destroySemaphore(res.*);
+                }
+            }.destroy, @ptrCast(self), @ptrCast(try varena.alloc(vk.Semaphore, sem)));
+        }
+
+        return sem;
     }
 
     pub fn destroyFence(self: *Self, hdl: vk.Fence) void {
@@ -295,28 +365,60 @@ pub const Context = struct {
         self.dev.destroySemaphore(hdl, null);
     }
 
-    pub fn allocateMemory(self: *Self, mem_type: MemoryType, size: u64) !vk.DeviceMemory {
-        return try self.dev.allocateMemory(&vk.MemoryAllocateInfo{
+    pub fn allocateMemory(self: *Self, maybe_arena: ?*VulkanArena, mem_type: MemoryType, size: u64) !vk.DeviceMemory {
+        const mem = try self.dev.allocateMemory(&vk.MemoryAllocateInfo{
             .allocation_size = size,
             .memory_type_index = self.memory_heaps[@intFromEnum(mem_type)],
         }, null);
+
+        // If user passes arena, they are expected to clean up only using the arena
+        if (maybe_arena) |varena| {
+            try varena.add(struct {
+                pub fn destroy(ctx: *Context, resource: *anyopaque) void {
+                    const res: *vk.DeviceMemory = @ptrCast(@alignCast(resource));
+                    ctx.freeMemory(res.*);
+                }
+            }.destroy, @ptrCast(self), @ptrCast(try varena.alloc(vk.DeviceMemory, mem)));
+        }
+
+        return mem;
     }
 
     pub fn freeMemory(self: *Self, mem: vk.DeviceMemory) void {
         self.dev.freeMemory(mem, null);
     }
 
-    pub fn createBuffer(self: *Self, size: u64, usage: vk.BufferUsageFlags) !vk.Buffer {
-        return try self.dev.createBuffer(&vk.BufferCreateInfo{
+    pub fn createBuffer(self: *Self, maybe_arena: ?*VulkanArena, size: u64, usage: vk.BufferUsageFlags) !Buffer {
+        const buf = Buffer{ .hdl = try self.dev.createBuffer(&vk.BufferCreateInfo{
             .sharing_mode = .exclusive,
             .size = size,
             .usage = usage,
-        }, null);
+        }, null) };
+
+        // If user passes arena, they are expected to clean up only using the arena
+        if (maybe_arena) |varena| {
+            try varena.add(struct {
+                pub fn destroy(ctx: *Context, resource: *anyopaque) void {
+                    const res: *Buffer = @ptrCast(@alignCast(resource));
+                    ctx.destroyBuffer(res.*);
+                }
+            }.destroy, @ptrCast(self), @ptrCast(try varena.alloc(Buffer, buf)));
+        }
+
+        return buf;
     }
 
-    pub fn destroyBuffer(self: *Self, buffer: vk.Buffer) void {
-        self.dev.destroyBuffer(buffer, null);
+    pub fn destroyBuffer(self: *Self, buffer: Buffer) void {
+        self.dev.destroyBuffer(buffer.hdl, null);
     }
+
+    //
+    // create buffer
+    // create texture
+    //  - should pass sharing mode
+    //  - should pass sharing mode
+    //
+    //
 
     fn createInstance(ator: Allocator, app_name: [*:0]const u8) !void {
         // Vulkan entrypoint to obtain a VkInstance provided by GLFW
@@ -406,13 +508,21 @@ pub const Context = struct {
         // Get relevant memory heaps
         self.mem_props = inst.getPhysicalDeviceMemoryProperties(self.pd);
 
-        // NOTE: Assuming that device always has coherent memory (no need for manual cache flushing/invalidation on app side)
+        // NOTE: Assuming that device always has coherent memory so that we
+        // dont need manual cache flushing/invalidation on app side for
+        // CPU-GPU or GPU-CPU
+        //
+        // TODO MISC:
+        // We could always have a helper 'sync_write()' and 'sync_read()'
+        // to flush/invalidate if needed, and do so based on MemoryType and
+        // whether it supported coherency or not (early out if memory has coherency)
+        //
         for (0..self.mem_props.memory_type_count) |i| {
             const mem = self.mem_props.memory_types[i];
             const flags = mem.property_flags;
             if (flags.device_local_bit == true) {
                 self.memory_heaps[@intFromEnum(MemoryType.gpu)] = @intCast(i);
-                std.debug.print("Found GPU memory! (device local)\n", .{});
+                std.debug.print("Found GPU memory! (device local) ({})\n", .{i});
                 break;
             }
         }
@@ -422,7 +532,7 @@ pub const Context = struct {
             const flags = mem.property_flags;
             if (flags.device_local_bit == true and flags.host_visible_bit == true and flags.host_coherent_bit == true) {
                 self.memory_heaps[@intFromEnum(MemoryType.cpu_to_gpu)] = @intCast(i);
-                std.debug.print("Found host-visible and host-coherent GPU memory! (staging)\n", .{});
+                std.debug.print("Found host-visible and host-coherent GPU memory! (staging) ({})\n", .{i});
             }
         }
 
@@ -431,7 +541,7 @@ pub const Context = struct {
             const flags = mem.property_flags;
             if (flags.host_visible_bit == true and flags.host_cached_bit == true and flags.host_coherent_bit == true) {
                 self.memory_heaps[@intFromEnum(MemoryType.gpu_to_cpu)] = @intCast(i);
-                std.debug.print("Found host-visible, host-cached and host-coherent GPU memory! (readback)\n", .{});
+                std.debug.print("Found host-visible, host-cached and host-coherent GPU memory! (readback) ({})\n", .{i});
             }
         }
 
@@ -445,7 +555,7 @@ pub const Context = struct {
         self.queues = .{.{}} ** @typeInfo(QueueType).@"enum".fields.len;
 
         // Ensure unique set of queue families
-        var set = std.AutoHashMap(u32, void).init(arena.ator());
+        var set = std.AutoHashMap(u32, u32).init(arena.ator()); // (qf_idx, num_queues)
 
         // Find suitable queue families
         // Use distinct queue family for each (Graphics, Compute, Transfer)
@@ -457,34 +567,42 @@ pub const Context = struct {
             const gfx = &self.queues[@intFromEnum(QueueType.graphics)];
             const compute = &self.queues[@intFromEnum(QueueType.compute)];
             const transfer = &self.queues[@intFromEnum(QueueType.transfer)];
+            const tr_graphics = &self.queues[@intFromEnum(QueueType.transfer_graphics)];
+            const tr_compute = &self.queues[@intFromEnum(QueueType.transfer_compute)];
 
             if (gfx.fam == null and qf.queue_flags.graphics_bit == true) {
                 gfx.*.fam = @intCast(qf_idx);
+                gfx.*.id = 0;
+                tr_graphics.*.fam = @intCast(qf_idx);
+                tr_graphics.*.id = 1;
                 std.debug.print("Found distinct queue family ({}) Graphics: {any}\n", .{ qf_idx, qf.queue_flags });
-                try set.put(@intCast(qf_idx), {});
+                try set.put(@intCast(qf_idx), 2);
             } else if (compute.fam == null and qf.queue_flags.compute_bit == true) {
                 compute.*.fam = @intCast(qf_idx);
+                compute.*.id = 0;
+                tr_compute.*.fam = @intCast(qf_idx);
+                tr_compute.*.id = 1;
                 std.debug.print("Found distinct queue family ({}) Compute: {any}\n", .{ qf_idx, qf.queue_flags });
-                try set.put(@intCast(qf_idx), {});
+                try set.put(@intCast(qf_idx), 2);
             } else if (transfer.fam == null and qf.queue_flags.transfer_bit == true) {
                 transfer.*.fam = @intCast(qf_idx);
                 std.debug.print("Found distinct queue family ({}) Transfer: {any}\n", .{ qf_idx, qf.queue_flags });
-                try set.put(@intCast(qf_idx), {});
+                try set.put(@intCast(qf_idx), 1);
             }
         }
 
         // If distinct queue family was not found, use graphics family as fallback
         // and create a distinct queue, preserving any potential async nature by
         // calling operations
-        var fallback_gfx_queues: u32 = 0;
         const gfx_fam = self.queues[@intFromEnum(QueueType.graphics)].fam.?;
         for (&self.queues, 0..) |*q, i| {
             const kind: QueueType = @enumFromInt(i);
             if (q.fam == null) {
-                q.fam = self.queues[@intFromEnum(QueueType.graphics)].fam.?;
+                q.fam = gfx_fam;
                 std.debug.print("Distinct queue family was not found for {}, using family ({}) as fallback\n", .{ kind, q.fam.? });
-                fallback_gfx_queues += 1;
-                q.id = fallback_gfx_queues;
+                const num_queues = set.getPtr(gfx_fam).?;
+                q.id = num_queues.*;
+                num_queues.* += 1;
             }
         }
 
@@ -493,7 +611,7 @@ pub const Context = struct {
         var it = set.iterator();
         while (it.next()) |entry| {
             try q_cinfos.append(.{
-                .queue_count = 1 + if (entry.key_ptr.* == gfx_fam) fallback_gfx_queues else 0,
+                .queue_count = entry.value_ptr.*,
                 .queue_family_index = entry.key_ptr.*,
                 .p_queue_priorities = &.{1.0},
             });
@@ -550,5 +668,54 @@ pub const Utils = struct {
             .level_count = vk.REMAINING_ARRAY_LAYERS,
             .layer_count = vk.REMAINING_MIP_LEVELS,
         };
+    }
+};
+
+pub const CleanupEntry = struct {
+    cleanup_fn: *const fn (self: *Context, resource: *anyopaque) void,
+    self: *Context,
+    resource: *anyopaque,
+};
+
+pub const VulkanArena = struct {
+    const Self = @This();
+
+    arena: memh.Arena,
+    cleanup_entries: std.ArrayList(CleanupEntry),
+
+    pub fn create(ator: Allocator) !*Self {
+        var self = try ator.create(Self);
+        self.arena = memh.Arena.init(ator);
+        self.cleanup_entries = std.ArrayList(CleanupEntry).init(self.arena.ator());
+        return self;
+    }
+
+    pub fn add(
+        self: *Self,
+        cleanup_fn: fn (self: *Context, resource: *anyopaque) void,
+        self_ref: *Context,
+        resource: *anyopaque,
+    ) !void {
+        try self.cleanup_entries.append(CleanupEntry{
+            .cleanup_fn = cleanup_fn,
+            .self = self_ref,
+            .resource = resource,
+        });
+    }
+
+    pub fn alloc(self: *Self, comptime T: type, data: T) !*anyopaque {
+        const ptr = try self.arena.ator().create(T);
+        ptr.* = data;
+        return ptr;
+    }
+
+    pub fn deinit(self: *Self) void {
+        // call each cleanup function in reverse order of allocation
+        while (self.cleanup_entries.items.len > 0) {
+            const entry = self.cleanup_entries.pop();
+            entry.cleanup_fn(entry.self, entry.resource);
+        }
+        self.cleanup_entries.deinit();
+        self.arena.deinit();
     }
 };

@@ -36,14 +36,18 @@ pub fn build(b: *std.Build) !void {
     vk_opts.addOption(bool, "validation_layer", b.option(bool, "vl", "Vulkan Validation Layer") orelse true); // On by default
     exe.root_module.addOptions("VK_CONF", vk_opts);
 
-    // Before final install TLS
+    // Before final install TLS, compile shaders
     {
-        const spath = "ext/shaders";
+        const spath = "res/shaders";
         const output_ext = ".spv";
+
+        var arena = std.heap.ArenaAllocator.init(b.allocator);
+        defer arena.deinit();
 
         var sdir = try std.fs.cwd().openDir(spath, .{ .iterate = true });
         defer sdir.close();
         var sdir_it = sdir.iterate();
+
         while (try sdir_it.next()) |entry| {
             if (entry.kind == .file) {
                 const ext = std.fs.path.extension(entry.name);
@@ -51,10 +55,8 @@ pub fn build(b: *std.Build) !void {
                 if (std.mem.eql(u8, ext, output_ext))
                     continue;
 
-                const in_sname = try std.mem.concat(b.allocator, u8, &.{ spath, "/", entry.name });
-                const out_sname = try std.mem.concat(b.allocator, u8, &.{ spath, "/", just_name, output_ext });
-                defer b.allocator.free(in_sname);
-                defer b.allocator.free(out_sname);
+                const in_sname = try std.mem.concat(arena.allocator(), u8, &.{ spath, "/", entry.name });
+                const out_sname = try std.mem.concat(arena.allocator(), u8, &.{ spath, "/", "compiled/", just_name, output_ext });
 
                 // One glslc invocation per shader
                 const compile_shaders = b.addSystemCommand(&.{"glslc"});
@@ -63,7 +65,9 @@ pub fn build(b: *std.Build) !void {
                     "-o",
                     out_sname,
                 });
+
                 b.getInstallStep().dependOn(&compile_shaders.step);
+                _ = arena.reset(.retain_capacity);
             }
         }
     }

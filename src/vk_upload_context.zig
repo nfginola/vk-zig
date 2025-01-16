@@ -21,14 +21,24 @@ pub const UploadContext = struct {
     top: usize = 0,
     memory: [*]u8 = undefined,
 
+    varena: *nvk.VulkanArena = undefined,
+
     vtx: *nvk.Context = undefined,
     vk_mem: vk.DeviceMemory = undefined,
-    vk_buf: vk.Buffer = undefined,
-    vk_cmdp: nvk.CommandPool = undefined,
-    vk_cmdb: nvk.CommandBuffer = undefined,
-    queue: nvk.Queue = undefined,
-    fence: vk.Fence = undefined,
+    vk_buf: nvk.Buffer = undefined,
+
     fence_on: bool = true,
+
+    cmdp_transfer: nvk.CommandPool = undefined,
+    cmdb_transfer: nvk.CommandBuffer = undefined,
+    transfer_queue: nvk.Queue = undefined,
+    transfer_fence: vk.Fence = undefined,
+    transfer_sem: vk.Semaphore = undefined, // Sync between ownership release and acq submits
+
+    cmdp_target: nvk.CommandPool = undefined,
+    cmdb_target: nvk.CommandBuffer = undefined,
+    target_queue: nvk.Queue = undefined,
+    target_fence: vk.Fence = undefined,
 
     // Keep user payloads alive until submission complete
     arena: memh.Arena = undefined,
@@ -56,68 +66,116 @@ pub const UploadContext = struct {
         return rec;
     }
 
-    pub fn add_work(self: *Self, comptime T: type, payload: T, cb: fn (nvk.CommandBuffer, src: vk.Buffer, *const T) void) !void {
-        const mem = try self.arena.ator().create(T);
-        mem.* = payload;
-        cb(self.vk_cmdb, self.vk_buf, mem);
+    pub fn copy_to_buffer(self: *Self, dst: nvk.Buffer, receipt: Receipt) !void {
+        self.cmdb_transfer.copyBuffer(self.vk_buf.hdl, dst.hdl, 1, &.{vk.BufferCopy{ .dst_offset = 0, .src_offset = receipt.start, .size = receipt.size }});
+
+        // Release ownership from this dedicated transfer queue family
+        self.cmdb_transfer.pipelineBarrier(.{ .transfer_bit = true }, .{ .top_of_pipe_bit = true }, .{}, 0, null, 1, &.{vk.BufferMemoryBarrier{
+            .buffer = dst.hdl,
+            .src_queue_family_index = self.transfer_queue.fam.?,
+            .dst_queue_family_index = self.target_queue.fam.?,
+            .src_access_mask = .{ .transfer_write_bit = true },
+            .dst_access_mask = .{},
+            .offset = 0,
+            .size = receipt.size,
+        }}, 0, null);
+
+        // Acquire ownership
+        self.cmdb_target.pipelineBarrier(.{ .transfer_bit = true }, .{ .top_of_pipe_bit = true }, .{}, 0, null, 1, &.{vk.BufferMemoryBarrier{
+            .buffer = dst.hdl,
+            .src_queue_family_index = self.transfer_queue.fam.?,
+            .dst_queue_family_index = self.target_queue.fam.?,
+            .src_access_mask = .{ .transfer_write_bit = true },
+            .dst_access_mask = .{},
+            .offset = 0,
+            .size = receipt.size,
+        }}, 0, null);
     }
 
     pub fn submit(self: *Self, sem_out: ?vk.Semaphore) !vk.Fence {
         try self.host_wait();
         self.top = 0;
 
-        try self.vk_cmdb.endCommandBuffer();
-        const ci = vk.SubmitInfo{
-            .p_command_buffers = &.{self.vk_cmdb.handle},
-            .command_buffer_count = 1,
-            .signal_semaphore_count = if (sem_out != null) 1 else 0,
-            .p_signal_semaphores = if (sem_out != null) &.{sem_out.?} else null,
-        };
-        _ = try self.queue.api.submit(1, &.{ci}, self.fence);
+        // Transfer and qf ownership release
+        {
+            try self.cmdb_transfer.endCommandBuffer();
+            const ci = vk.SubmitInfo{
+                .p_command_buffers = &.{self.cmdb_transfer.handle},
+                .command_buffer_count = 1,
+                .signal_semaphore_count = 1,
+                .p_signal_semaphores = &.{self.transfer_sem},
+            };
+            _ = try self.transfer_queue.api.submit(1, &.{ci}, self.transfer_fence);
+        }
+
+        // qf ownership acqusition for target family
+        {
+            try self.cmdb_target.endCommandBuffer();
+            const ci = vk.SubmitInfo{
+                .p_command_buffers = &.{self.cmdb_target.handle},
+                .command_buffer_count = 1,
+                .signal_semaphore_count = if (sem_out != null) 1 else 0,
+                .p_signal_semaphores = if (sem_out != null) &.{sem_out.?} else null,
+            };
+            _ = try self.target_queue.api.submit(1, &.{ci}, self.target_fence);
+        }
+
         self.fence_on = true;
 
-        return self.fence;
+        return self.target_fence;
     }
 
     pub fn host_wait(self: *Self) !void {
         if (self.fence_on) {
-            _ = try self.vtx.dev.waitForFences(1, &.{self.fence}, vk.TRUE, std.math.maxInt(u64));
-            _ = try self.vtx.dev.resetFences(1, &.{self.fence});
+            _ = try self.vtx.dev.waitForFences(2, &.{ self.transfer_fence, self.target_fence }, vk.TRUE, std.math.maxInt(u64));
+            _ = try self.vtx.dev.resetFences(2, &.{ self.transfer_fence, self.target_fence });
             self.fence_on = false; // do once
 
             _ = self.arena.arena.reset(.retain_capacity);
-            try self.vk_cmdp.reset(.{});
-            self.vk_cmdb = try self.vk_cmdp.alloc(.primary, 1);
-            try self.vk_cmdb.beginCommandBuffer(&vk.CommandBufferBeginInfo{ .flags = .{ .one_time_submit_bit = true } });
+            try self.cmdp_transfer.reset(.{});
+            try self.cmdp_target.reset(.{});
+            self.cmdb_transfer = try self.cmdp_transfer.alloc(.primary, 1);
+            self.cmdb_target = try self.cmdp_target.alloc(.primary, 1);
+            try self.cmdb_transfer.beginCommandBuffer(&vk.CommandBufferBeginInfo{ .flags = .{ .one_time_submit_bit = true } });
+            try self.cmdb_target.beginCommandBuffer(&vk.CommandBufferBeginInfo{ .flags = .{ .one_time_submit_bit = true } });
         }
     }
 
-    pub fn create(ator: Allocator, vtx: *nvk.Context) !*Self {
-        const self = try ator.create(Self);
-        self.* = .{};
-        self.vtx = vtx;
-        self.queue = self.vtx.getQueue(.transfer);
-        self.fence = self.vtx.createFence(.{ .signaled_bit = true });
-
+    pub fn create(ator: Allocator, vtx: *nvk.Context, target_queue: nvk.QueueType) !*Self {
         const total_size = 64_000;
 
-        self.vk_cmdp = try vtx.createCmdPool(.transfer, .{ .transient_bit = true });
-        self.vk_mem = try vtx.allocateMemory(.cpu_to_gpu, total_size);
-        self.vk_buf = try vtx.createBuffer(total_size, .{ .transfer_src_bit = true });
-        try vtx.dev.bindBufferMemory(self.vk_buf, self.vk_mem, 0);
+        const self = try ator.create(Self);
+        self.* = .{};
+        self.arena = memh.Arena.init(ator);
+        self.varena = try nvk.Context.createArena(ator);
+        self.vtx = vtx;
+
+        self.transfer_queue = self.vtx.getQueue(.transfer);
+        self.transfer_fence = try self.vtx.createFence(self.varena, .{ .signaled_bit = true });
+        self.transfer_sem = try self.vtx.createSemaphore(self.varena);
+        self.cmdp_transfer = try vtx.createCmdPool(self.varena, .transfer, .{ .transient_bit = true });
+
+        // Use dedicated acquire queue for graphics/compute
+        const target_queue_type = switch (target_queue) {
+            .graphics, .transfer_graphics => .transfer_graphics,
+            .compute, .transfer_compute => .transfer_compute,
+            else => target_queue,
+        };
+        self.target_queue = self.vtx.getQueue(target_queue_type);
+        self.target_fence = try self.vtx.createFence(self.varena, .{ .signaled_bit = true });
+        self.cmdp_target = try vtx.createCmdPool(self.varena, target_queue_type, .{ .transient_bit = true });
+
+        self.vk_mem = try vtx.allocateMemory(self.varena, .cpu_to_gpu, total_size);
+        self.vk_buf = try vtx.createBuffer(self.varena, total_size, .{ .transfer_src_bit = true });
+        try vtx.dev.bindBufferMemory(self.vk_buf.hdl, self.vk_mem, 0);
         if (try vtx.dev.mapMemory(self.vk_mem, 0, total_size, .{})) |p| {
             self.memory = @as([*]u8, @ptrCast(p))[0..total_size];
         }
-
-        self.arena = memh.Arena.init(ator);
 
         return self;
     }
 
     pub fn deinit(self: *Self) void {
-        self.vtx.destroyBuffer(self.vk_buf);
-        self.vtx.freeMemory(self.vk_mem);
-        self.vtx.destroyCmdPool(self.vk_cmdp);
-        self.vtx.destroyFence(self.fence);
+        self.varena.deinit();
     }
 };
