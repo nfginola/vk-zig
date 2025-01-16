@@ -63,8 +63,16 @@ pub fn main() !void {
     const clear_finished_sem = try ctx.createSemaphore(varena);
     const sc_img_acquired_sem = try ctx.createSemaphore(varena);
     const cmdb_finished_fence = try ctx.createFence(varena, .{ .signaled_bit = true });
-    const vb = try ctx.createBuffer(varena, 64_000, .{ .vertex_buffer_bit = true, .transfer_dst_bit = true });
-    const ib = try ctx.createBuffer(varena, 64_000, .{ .index_buffer_bit = true, .transfer_dst_bit = true });
+    const vb = try ctx.createBuffer(varena, 32_000, .{ .vertex_buffer_bit = true, .transfer_dst_bit = true });
+    const ib = try ctx.createBuffer(varena, 32_000, .{ .index_buffer_bit = true, .transfer_dst_bit = true });
+    const Vertex = struct {
+        x: f32,
+        y: f32,
+        z: f32,
+        u: f32,
+        v: f32,
+        w: f32,
+    };
     {
         // Grab buffer memory
         const vmem = try ctx.allocateMemory(varena, .gpu, 64_000);
@@ -73,33 +81,17 @@ pub fn main() !void {
         _ = try ctx.dev.bindBufferMemory(ib.hdl, imem, 0);
 
         // Upload tri and index
-        const Vertex = struct {
-            x: f32,
-            y: f32,
-            z: f32,
-            u: f32,
-            v: f32,
-        };
         const vertices = [_]Vertex{
-            .{ .x = -0.5, .y = -0.5, .z = 0.5, .u = 0.0, .v = 0.0 },
-            .{ .x = 0.5, .y = -0.5, .z = 0.5, .u = 0.0, .v = 1.0 },
-            .{ .x = 0.0, .y = 0.5, .z = 0.5, .u = 1.0, .v = 1.0 },
+            .{ .x = 0.0, .y = -0.5, .z = 0.0, .u = 1.0, .v = 0.0, .w = 0.0 },
+            .{ .x = -0.5, .y = 0.5, .z = 0.0, .u = 0.0, .v = 1.0, .w = 0.0 },
+            .{ .x = 0.5, .y = 0.5, .z = 0.0, .u = 0.0, .v = 0.0, .w = 1.0 },
         };
-        const indices = [_]u32{ 0, 1, 2 };
-        const r1 = try upload.push(memh.byteSliceC(Vertex, vertices[0..]), 4);
-        const r2 = try upload.push(memh.byteSliceC(u32, indices[0..]), 4);
-        try upload.copy_to_buffer(vb, r1);
-        try upload.copy_to_buffer(ib, r2);
-        _ = try upload.submit(null);
+        const indices = [_]u32{ 0, 1, 2, 4, 50, 100, 150 };
+        try upload.copy_to_buffer(vb, try upload.push(memh.byteSliceC(Vertex, vertices[0..]), 0));
+        try upload.copy_to_buffer(ib, try upload.push(memh.byteSliceC(u32, indices[0..]), 0));
+        try upload.submit(null);
         try upload.host_wait();
     }
-
-    const vs = try std.fs.cwd().openFile("res/shaders/compiled/tri.spv", .{});
-    const fs = try std.fs.cwd().openFile("res/shaders/compiled/pass.spv", .{});
-    defer vs.close();
-    defer fs.close();
-    const vs_mod = try ctx.createShaderModule(varena, try vs.reader().readAllAlloc(arena.ator(), std.math.maxInt(usize)));
-    const fs_mod = try ctx.createShaderModule(varena, try fs.reader().readAllAlloc(arena.ator(), std.math.maxInt(usize)));
 
     // TODO:
     //  x Grab glslc
@@ -119,14 +111,17 @@ pub fn main() !void {
     //
     //  x Garbage can (arena for vk resources)
     //
+    //  x Use input layout and VB/IB to render triangle
+    //
     //  - Move swapchain to vsc.zig
     //  - Refactor vtx.zig to not have to need a struct for variables and functions
     //      (Look at Allocator as example)
     //
-    //  - Use input layout and VB/IB to render triangle
-    //      - Require DescriptorSetLayout, and similar
     //
     //  - Use Right Handed coordinate system with Z up
+
+    const vs_mod = try ctx.createShaderModuleFromFile(arena.ator(), varena, "res/shaders/compiled/tri.spv");
+    const fs_mod = try ctx.createShaderModuleFromFile(arena.ator(), varena, "res/shaders/compiled/pass.spv");
 
     const p_layout = try ctx.dev.createPipelineLayout(&vk.PipelineLayoutCreateInfo{}, null);
     defer ctx.dev.destroyPipelineLayout(p_layout, null);
@@ -155,7 +150,31 @@ pub fn main() !void {
                     .p_name = "main",
                 },
             },
-            .p_vertex_input_state = &vk.PipelineVertexInputStateCreateInfo{},
+            .p_vertex_input_state = &vk.PipelineVertexInputStateCreateInfo{
+                .vertex_binding_description_count = 1,
+                .p_vertex_binding_descriptions = &.{
+                    vk.VertexInputBindingDescription{
+                        .binding = 0,
+                        .input_rate = .vertex,
+                        .stride = @sizeOf(Vertex),
+                    },
+                },
+                .vertex_attribute_description_count = 2,
+                .p_vertex_attribute_descriptions = &.{
+                    vk.VertexInputAttributeDescription{
+                        .binding = 0,
+                        .location = 0,
+                        .format = .r32g32b32_sfloat,
+                        .offset = @offsetOf(Vertex, "x"),
+                    },
+                    vk.VertexInputAttributeDescription{
+                        .binding = 0,
+                        .location = 1,
+                        .format = .r32g32b32_sfloat,
+                        .offset = @offsetOf(Vertex, "u"),
+                    },
+                },
+            },
             .p_input_assembly_state = &vk.PipelineInputAssemblyStateCreateInfo{
                 .topology = .triangle_list,
                 .primitive_restart_enable = vk.FALSE,
@@ -326,7 +345,10 @@ pub fn main() !void {
         };
         cmdb.beginRenderingKHR(&rinfo);
         cmdb.bindPipeline(.graphics, pipes[0]);
-        cmdb.draw(3, 1, 0, 0);
+        cmdb.bindVertexBuffers(0, 1, &.{vb.hdl}, &.{0});
+        cmdb.bindIndexBuffer(ib.hdl, 0, .uint32);
+        cmdb.drawIndexed(3, 1, 0, 0, 0);
+        // cmdb.draw(3, 1, 0, 0);
         cmdb.endRenderingKHR();
 
         cmdb.pipelineBarrier(.{ .color_attachment_output_bit = true }, .{ .top_of_pipe_bit = true }, .{}, 0, null, 0, null, 1, &.{

@@ -283,6 +283,12 @@ pub const Context = struct {
         return self.queues[@intFromEnum(qtype)];
     }
 
+    pub fn createShaderModuleFromFile(self: *Self, ator: Allocator, maybe_arena: ?*VulkanArena, fpath: []const u8) !vk.ShaderModule {
+        const file = try std.fs.cwd().openFile(fpath, .{});
+        defer file.close();
+        return try self.createShaderModule(maybe_arena orelse null, try file.reader().readAllAlloc(ator, std.math.maxInt(usize)));
+    }
+
     pub fn createShaderModule(self: *Self, maybe_arena: ?*VulkanArena, binary: []u8) !vk.ShaderModule {
         const mod = try self.dev.createShaderModule(&.{
             .code_size = binary.len,

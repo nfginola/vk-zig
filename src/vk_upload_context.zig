@@ -46,8 +46,12 @@ pub const UploadContext = struct {
     pub fn push(self: *Self, data: []const u8, alignment: usize) !Receipt {
         try self.host_wait();
 
-        const align_up = (self.top % alignment) != 0;
-        const start = self.top + (alignment - (self.top % alignment)) * @intFromBool(align_up);
+        var start: usize = self.top;
+        if (alignment != 0) {
+            const align_up = (self.top % alignment) != 0;
+            start = self.top + (alignment - (self.top % alignment)) * @intFromBool(align_up);
+        }
+
         @memcpy(self.memory[start..], data[0..data.len]);
         self.top = start + data.len;
 
@@ -58,8 +62,11 @@ pub const UploadContext = struct {
     pub fn grab(self: *Self, bytes: usize, alignment: usize) !Receipt {
         try self.host_wait();
 
-        const align_up = (self.top % alignment) != 0;
-        const start = self.top + (alignment - (self.top % alignment)) * @intFromBool(align_up);
+        var start: usize = self.top;
+        if (alignment != 0) {
+            const align_up = (self.top % alignment) != 0;
+            start = self.top + (alignment - (self.top % alignment)) * @intFromBool(align_up);
+        }
         self.top = start + bytes;
 
         const rec = Receipt{ .start = start, .memory = self.memory[start..(start + bytes)], .size = bytes };
@@ -80,7 +87,7 @@ pub const UploadContext = struct {
             .size = receipt.size,
         }}, 0, null);
 
-        // Acquire ownership
+        // Acquire ownership on target family
         self.cmdb_target.pipelineBarrier(.{ .transfer_bit = true }, .{ .top_of_pipe_bit = true }, .{}, 0, null, 1, &.{vk.BufferMemoryBarrier{
             .buffer = dst.hdl,
             .src_queue_family_index = self.transfer_queue.fam.?,
@@ -90,9 +97,22 @@ pub const UploadContext = struct {
             .offset = 0,
             .size = receipt.size,
         }}, 0, null);
+
+        // Note or ownership transfer:
+        //
+        // If an application does not need the contents of a resource to remain valid
+        // when transferring from one queue family to another, then the ownership transfer
+        // should be skipped.
+        //
+        // Essentially, if we have Write -> Read -> Discard loop, and write/read happens in distinct qf's then
+        // we only need ownership transfer on Write -> Read
+        //
     }
 
-    pub fn submit(self: *Self, sem_out: ?vk.Semaphore) !vk.Fence {
+    /// User can optionally pass a semaphore that will be
+    /// signaled once transfer and qf ownership transfer have
+    /// both completed
+    pub fn submit(self: *Self, sem_out: ?vk.Semaphore) !void {
         try self.host_wait();
         self.top = 0;
 
@@ -116,13 +136,14 @@ pub const UploadContext = struct {
                 .command_buffer_count = 1,
                 .signal_semaphore_count = if (sem_out != null) 1 else 0,
                 .p_signal_semaphores = if (sem_out != null) &.{sem_out.?} else null,
+                .wait_semaphore_count = 1,
+                .p_wait_semaphores = &.{self.transfer_sem},
+                .p_wait_dst_stage_mask = &.{.{ .transfer_bit = true }},
             };
             _ = try self.target_queue.api.submit(1, &.{ci}, self.target_fence);
         }
 
         self.fence_on = true;
-
-        return self.target_fence;
     }
 
     pub fn host_wait(self: *Self) !void {

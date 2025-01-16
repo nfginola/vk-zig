@@ -55,6 +55,6 @@ pub fn byteSlice(comptime T: type, slice: []T) []u8 {
 }
 
 pub fn byteSliceC(comptime T: type, slice: []const T) []const u8 {
-    var bytes: [*]const u8 = @ptrCast(&slice);
+    var bytes: [*]const u8 = @ptrCast(@alignCast(slice));
     return bytes[0 .. slice.len * @sizeOf(T)];
 }
