@@ -112,14 +112,13 @@ pub fn main() !void {
 
     // TODO:
     //  x Grab glslc
-    //  - Write triangle vs and fs shader in GLSL
+    //  x Write triangle vs and fs shader in GLSL
     //      - vs just passthrough NDC verts and uvs
     //      - fs just outputs uv as colors
-    //  - Compile shaders to SPIR-V
-    //  - Create shader module
+    //  x Compile shaders to SPIR-V
+    //  x Create shader module
     //      - Verifies that shaders are O.K! :)
-    //
-    //  - Make pipeline for triangle
+    //  x Make pipeline for triangle
     //
     //  - Move swapchain to vsc.zig
     //  - Refactor vtx.zig to not have to need a struct for variables and functions
@@ -144,7 +143,8 @@ pub fn main() !void {
         .code_size = fs_data.len,
         .p_code = @ptrCast(@alignCast(fs_data.ptr)),
     }, null);
-    std.debug.print("{any}, {any}\n", .{ vs_mod, fs_mod });
+    defer ctx.dev.destroyShaderModule(vs_mod, null);
+    defer ctx.dev.destroyShaderModule(fs_mod, null);
 
     const target_details = vk.PipelineRenderingCreateInfoKHR{
         .color_attachment_count = 1,
@@ -156,6 +156,7 @@ pub fn main() !void {
 
     // TODO
     const p_layout = try ctx.dev.createPipelineLayout(&vk.PipelineLayoutCreateInfo{}, null);
+    defer ctx.dev.destroyPipelineLayout(p_layout, null);
 
     var pipes: [1]vk.Pipeline = undefined;
     _ = try ctx.dev.createGraphicsPipelines(.null_handle, pipes.len, &.{
@@ -256,6 +257,7 @@ pub fn main() !void {
             .base_pipeline_index = 0,
         },
     }, null, &pipes);
+    defer ctx.dev.destroyPipeline(pipes[0], null);
 
     //
     // OPTIONAL:
