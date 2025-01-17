@@ -21,7 +21,7 @@ pub const UploadContext = struct {
     top: usize = 0,
     memory: [*]u8 = undefined,
 
-    varena: *nvk.VulkanArena = undefined,
+    varena: *nvk.VkArena = undefined,
 
     vtx: *nvk.Context = undefined,
     vk_mem: vk.DeviceMemory = undefined,
@@ -148,8 +148,7 @@ pub const UploadContext = struct {
 
     pub fn host_wait(self: *Self) !void {
         if (self.fence_on) {
-            _ = try self.vtx.dev.waitForFences(2, &.{ self.transfer_fence, self.target_fence }, vk.TRUE, std.math.maxInt(u64));
-            _ = try self.vtx.dev.resetFences(2, &.{ self.transfer_fence, self.target_fence });
+            try self.vtx.waitResetFences(&[_]vk.Fence{ self.transfer_fence, self.target_fence });
             self.fence_on = false; // do once
 
             _ = self.arena.arena.reset(.retain_capacity);

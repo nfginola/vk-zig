@@ -273,8 +273,19 @@ pub const Context = struct {
         inst.destroyInstance(null);
     }
 
-    pub fn createArena(ator: Allocator) !*VulkanArena {
-        return VulkanArena.create(ator);
+    pub fn createArena(ator: Allocator) !*VkArena {
+        return VkArena.create(ator);
+    }
+
+    pub fn waitForFences(self: *Self, fences: []const vk.Fence) !void {
+        _ = try self.dev.waitForFences(@intCast(fences.len), @ptrCast(fences), vk.TRUE, std.math.maxInt(u64));
+    }
+    pub fn resetFences(self: *Self, fences: []const vk.Fence) !void {
+        _ = try self.dev.resetFences(@intCast(fences.len), @ptrCast(fences));
+    }
+    pub fn waitResetFences(self: *Self, fences: []const vk.Fence) !void {
+        try self.waitForFences(fences);
+        try self.resetFences(fences);
     }
 
     /// Each queue type should be treated as distinct queues from a distinct family.
@@ -283,13 +294,13 @@ pub const Context = struct {
         return self.queues[@intFromEnum(qtype)];
     }
 
-    pub fn createShaderModuleFromFile(self: *Self, ator: Allocator, maybe_arena: ?*VulkanArena, fpath: []const u8) !vk.ShaderModule {
+    pub fn createShaderModuleFromFile(self: *Self, ator: Allocator, maybe_arena: ?*VkArena, fpath: []const u8) !vk.ShaderModule {
         const file = try std.fs.cwd().openFile(fpath, .{});
         defer file.close();
         return try self.createShaderModule(maybe_arena orelse null, try file.reader().readAllAlloc(ator, std.math.maxInt(usize)));
     }
 
-    pub fn createShaderModule(self: *Self, maybe_arena: ?*VulkanArena, binary: []u8) !vk.ShaderModule {
+    pub fn createShaderModule(self: *Self, maybe_arena: ?*VkArena, binary: []u8) !vk.ShaderModule {
         const mod = try self.dev.createShaderModule(&.{
             .code_size = binary.len,
             .p_code = @ptrCast(@alignCast(binary.ptr)),
@@ -308,7 +319,7 @@ pub const Context = struct {
         return mod;
     }
 
-    pub fn createCmdPool(self: *Self, maybe_arena: ?*VulkanArena, qtype: QueueType, flags: vk.CommandPoolCreateFlags) !CommandPool {
+    pub fn createCmdPool(self: *Self, maybe_arena: ?*VkArena, qtype: QueueType, flags: vk.CommandPoolCreateFlags) !CommandPool {
         const pool = CommandPool{
             .ctx = self,
             .hdl = try self.dev.createCommandPool(&.{ .queue_family_index = self.queues[@intFromEnum(qtype)].fam.?, .flags = flags }, null),
@@ -331,7 +342,7 @@ pub const Context = struct {
         self.dev.destroyCommandPool(pool.hdl, null);
     }
 
-    pub fn createFence(self: *Self, maybe_arena: ?*VulkanArena, flags: vk.FenceCreateFlags) !vk.Fence {
+    pub fn createFence(self: *Self, maybe_arena: ?*VkArena, flags: vk.FenceCreateFlags) !vk.Fence {
         const f = try self.dev.createFence(&.{ .flags = flags }, null);
 
         // If user passes arena, they are expected to clean up only using the arena
@@ -347,7 +358,7 @@ pub const Context = struct {
         return f;
     }
 
-    pub fn createSemaphore(self: *Self, maybe_arena: ?*VulkanArena) !vk.Semaphore {
+    pub fn createSemaphore(self: *Self, maybe_arena: ?*VkArena) !vk.Semaphore {
         const sem = try self.dev.createSemaphore(&.{}, null);
 
         // If user passes arena, they are expected to clean up only using the arena
@@ -371,7 +382,7 @@ pub const Context = struct {
         self.dev.destroySemaphore(hdl, null);
     }
 
-    pub fn allocateMemory(self: *Self, maybe_arena: ?*VulkanArena, mem_type: MemoryType, size: u64) !vk.DeviceMemory {
+    pub fn allocateMemory(self: *Self, maybe_arena: ?*VkArena, mem_type: MemoryType, size: u64) !vk.DeviceMemory {
         const mem = try self.dev.allocateMemory(&vk.MemoryAllocateInfo{
             .allocation_size = size,
             .memory_type_index = self.memory_heaps[@intFromEnum(mem_type)],
@@ -394,7 +405,7 @@ pub const Context = struct {
         self.dev.freeMemory(mem, null);
     }
 
-    pub fn createBuffer(self: *Self, maybe_arena: ?*VulkanArena, size: u64, usage: vk.BufferUsageFlags) !Buffer {
+    pub fn createBuffer(self: *Self, maybe_arena: ?*VkArena, size: u64, usage: vk.BufferUsageFlags) !Buffer {
         const buf = Buffer{ .hdl = try self.dev.createBuffer(&vk.BufferCreateInfo{
             .sharing_mode = .exclusive,
             .size = size,
@@ -683,7 +694,7 @@ pub const CleanupEntry = struct {
     resource: *anyopaque,
 };
 
-pub const VulkanArena = struct {
+pub const VkArena = struct {
     const Self = @This();
 
     arena: memh.Arena,

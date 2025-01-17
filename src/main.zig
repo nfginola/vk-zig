@@ -55,7 +55,7 @@ pub fn main() !void {
     var upload = try utx.UploadContext.create(arena.ator(), ctx, .graphics);
     defer upload.deinit();
 
-    // Vulkan resources lifetime arena
+    // Top level VK resources lifetime arena
     var varena = try nvk.Context.createArena(arena.ator());
     defer varena.deinit();
 
@@ -63,6 +63,7 @@ pub fn main() !void {
     const clear_finished_sem = try ctx.createSemaphore(varena);
     const sc_img_acquired_sem = try ctx.createSemaphore(varena);
     const cmdb_finished_fence = try ctx.createFence(varena, .{ .signaled_bit = true });
+
     const vb = try ctx.createBuffer(varena, 32_000, .{ .vertex_buffer_bit = true, .transfer_dst_bit = true });
     const ib = try ctx.createBuffer(varena, 32_000, .{ .index_buffer_bit = true, .transfer_dst_bit = true });
     const Vertex = struct {
@@ -80,7 +81,7 @@ pub fn main() !void {
         _ = try ctx.dev.bindBufferMemory(vb.hdl, vmem, 0);
         _ = try ctx.dev.bindBufferMemory(ib.hdl, imem, 0);
 
-        // Upload tri and index
+        // Upload tri and indices
         const vertices = [_]Vertex{
             .{ .x = 0.0, .y = -0.5, .z = 0.0, .u = 1.0, .v = 0.0, .w = 0.0 },
             .{ .x = -0.5, .y = 0.5, .z = 0.0, .u = 0.0, .v = 1.0, .w = 0.0 },
@@ -108,7 +109,6 @@ pub fn main() !void {
     //
     //  x Replace vk.Buffer with custom nvk.Buffer
     //      x Prep for VMA
-    //
     //  x Garbage can (arena for vk resources)
     //
     //  x Use input layout and VB/IB to render triangle
@@ -117,8 +117,10 @@ pub fn main() !void {
     //  - Refactor vtx.zig to not have to need a struct for variables and functions
     //      (Look at Allocator as example)
     //
+    //  - Add VMA support
     //
     //  - Use Right Handed coordinate system with Z up
+    //
 
     const vs_mod = try ctx.createShaderModuleFromFile(arena.ator(), varena, "res/shaders/compiled/tri.spv");
     const fs_mod = try ctx.createShaderModuleFromFile(arena.ator(), varena, "res/shaders/compiled/pass.spv");
@@ -181,10 +183,10 @@ pub fn main() !void {
             },
             .p_multisample_state = &vk.PipelineMultisampleStateCreateInfo{
                 .rasterization_samples = .{ .@"1_bit" = true },
-                .sample_shading_enable = vk.FALSE, // TODO: dont know what this is
-                .min_sample_shading = 0, // TODO dont know what this is
-                .alpha_to_coverage_enable = vk.FALSE, // TODO dont know what this is
-                .alpha_to_one_enable = vk.FALSE, // TODO dont know what this is
+                .sample_shading_enable = vk.FALSE,
+                .min_sample_shading = 0,
+                .alpha_to_coverage_enable = vk.FALSE,
+                .alpha_to_one_enable = vk.FALSE,
             },
             .p_depth_stencil_state = &vk.PipelineDepthStencilStateCreateInfo{
                 .depth_test_enable = vk.FALSE,
@@ -201,8 +203,8 @@ pub fn main() !void {
                 .cull_mode = .{ .back_bit = true },
                 .front_face = .counter_clockwise,
                 .polygon_mode = .fill,
-                .depth_clamp_enable = vk.TRUE, // TODO what is this
-                .rasterizer_discard_enable = vk.FALSE, // TODO what is this
+                .depth_clamp_enable = vk.TRUE,
+                .rasterizer_discard_enable = vk.FALSE,
                 .depth_bias_enable = vk.FALSE,
                 .depth_bias_clamp = 0.0,
                 .depth_bias_constant_factor = 0.0,
@@ -305,8 +307,7 @@ pub fn main() !void {
             break;
         }
 
-        _ = try dev.waitForFences(1, &.{cmdb_finished_fence}, vk.TRUE, std.math.maxInt(u64));
-        try dev.resetFences(1, &.{cmdb_finished_fence});
+        try ctx.waitResetFences(&[_]vk.Fence{cmdb_finished_fence});
         const sc_next = try ctx.sc.getNext(sc_img_acquired_sem, null);
 
         try cmdp.reset(.{});
