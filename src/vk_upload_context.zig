@@ -18,6 +18,7 @@ pub const UploadContext = struct {
     //
     // - allocWithOptions for alignment
     // - reset
+
     top: usize = 0,
     memory: [*]u8 = undefined,
 

@@ -429,14 +429,6 @@ pub const Context = struct {
         self.dev.destroyBuffer(buffer.hdl, null);
     }
 
-    //
-    // create buffer
-    // create texture
-    //  - should pass sharing mode
-    //  - should pass sharing mode
-    //
-    //
-
     fn createInstance(ator: Allocator, app_name: [*:0]const u8) !void {
         // Vulkan entrypoint to obtain a VkInstance provided by GLFW
         // https://registry.khronos.org/vulkan/specs/latest/man/html/vkGetInstanceProcAddr.html
@@ -663,10 +655,6 @@ fn debugCallback(
     message_types: vk.DebugUtilsMessageTypeFlagsEXT,
     p_callback_data: ?*const vk.DebugUtilsMessengerCallbackDataEXT,
     p_user_data: ?*anyopaque,
-    // _: vk.DebugUtilsMessageSeverityFlagsEXT,
-    // _: vk.DebugUtilsMessageTypeFlagsEXT,
-    // _: ?*const vk.DebugUtilsMessengerCallbackDataEXT,
-    // _: ?*anyopaque,
 ) callconv(vk.vulkan_call_conv) vk.Bool32 {
     _ = message_severity;
     _ = message_types;
@@ -677,7 +665,7 @@ fn debugCallback(
 }
 
 pub const Utils = struct {
-    pub fn full_subres(aspect: vk.ImageAspectFlags) vk.ImageSubresourceRange {
+    pub fn fullSubres(aspect: vk.ImageAspectFlags) vk.ImageSubresourceRange {
         return vk.ImageSubresourceRange{
             .aspect_mask = aspect,
             .base_array_layer = 0,

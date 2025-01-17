@@ -114,12 +114,20 @@ pub fn main() !void {
     //  x Use input layout and VB/IB to render triangle
     //
     //  - Move swapchain to vsc.zig
-    //  - Refactor vtx.zig to not have to need a struct for variables and functions
+    //  - Refactor vtx.zig to not have to need a struct for variables and functions?
     //      (Look at Allocator as example)
     //
     //  - Add VMA support
     //
-    //  - Use Right Handed coordinate system with Z up
+    //  - Make math helpers
+    //      - Vector2,3,4
+    //          - vadd, vsub, vdivFac, vmulFac, dot, cross
+    //      - Mat2,3,4
+    //          - store row-major for easy mul calc (n row*column)
+    //          - mat2 x v2
+    //          - mat3 x v3
+    //          - mat4 x v4
+    //      - Use Right Handed coordinate system with Z up and Y into screen
     //
 
     const vs_mod = try ctx.createShaderModuleFromFile(arena.ator(), varena, "res/shaders/compiled/tri.spv");
@@ -321,7 +329,7 @@ pub fn main() !void {
                 .src_access_mask = .{},
                 .dst_access_mask = .{ .color_attachment_write_bit = true },
                 .image = sc_next.image,
-                .subresource_range = nvk.Utils.full_subres(.{ .color_bit = true }),
+                .subresource_range = nvk.Utils.fullSubres(.{ .color_bit = true }),
                 .src_queue_family_index = gq.fam.?,
                 .dst_queue_family_index = gq.fam.?,
             },
@@ -359,7 +367,7 @@ pub fn main() !void {
                 .src_access_mask = .{ .color_attachment_write_bit = true },
                 .dst_access_mask = .{},
                 .image = sc_next.image,
-                .subresource_range = nvk.Utils.full_subres(.{ .color_bit = true }),
+                .subresource_range = nvk.Utils.fullSubres(.{ .color_bit = true }),
                 .src_queue_family_index = gq.fam.?,
                 .dst_queue_family_index = gq.fam.?,
             },
