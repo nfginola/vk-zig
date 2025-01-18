@@ -94,7 +94,7 @@ pub fn createShaderModule(self: *Self, maybe_varena: ?*GArena, binary: []u8) !vk
     }, null);
 
     if (maybe_varena) |varena| {
-        try varena.add(vk.ShaderModule, Self.destroyShaderModule, mod);
+        try varena.add(@TypeOf(mod), Self.destroyShaderModule, mod);
     }
 
     return mod;
@@ -112,7 +112,7 @@ pub fn createCmdPool(self: *Self, maybe_varena: ?*GArena, qtype: vkt.QueueType, 
     };
 
     if (maybe_varena) |varena| {
-        try varena.add(vkt.CommandPool, Self.destroyCmdPool, pool);
+        try varena.add(@TypeOf(pool), Self.destroyCmdPool, pool);
     }
 
     return pool;
@@ -126,7 +126,7 @@ pub fn createFence(self: *Self, maybe_varena: ?*GArena, flags: vk.FenceCreateFla
     const f = try self.dev.createFence(&.{ .flags = flags }, null);
 
     if (maybe_varena) |varena| {
-        try varena.add(vk.Fence, Self.destroyFence, f);
+        try varena.add(@TypeOf(f), Self.destroyFence, f);
     }
 
     return f;
@@ -136,7 +136,7 @@ pub fn createSemaphore(self: *Self, maybe_varena: ?*GArena) !vk.Semaphore {
     const sem = try self.dev.createSemaphore(&.{}, null);
 
     if (maybe_varena) |varena| {
-        try varena.add(vk.Semaphore, Self.destroySemaphore, sem);
+        try varena.add(@TypeOf(sem), Self.destroySemaphore, sem);
     }
 
     return sem;
@@ -157,7 +157,7 @@ pub fn allocateMemory(self: *Self, maybe_varena: ?*GArena, mem_type: vkt.MemoryT
     }, null);
 
     if (maybe_varena) |varena| {
-        try varena.add(vk.DeviceMemory, Self.freeMemory, mem);
+        try varena.add(@TypeOf(mem), Self.freeMemory, mem);
     }
 
     return mem;
@@ -175,7 +175,7 @@ pub fn createBuffer(self: *Self, maybe_varena: ?*GArena, size: u64, usage: vk.Bu
     }, null) };
 
     if (maybe_varena) |varena| {
-        try varena.add(vkt.Buffer, Self.destroyBuffer, buf);
+        try varena.add(@TypeOf(buf), Self.destroyBuffer, buf);
     }
 
     return buf;
