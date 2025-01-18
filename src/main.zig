@@ -133,6 +133,8 @@ pub fn main() !void {
     //          - mat4 x v4
     //      - Use Right Handed coordinate system with Z up and Y into screen
     //
+    //  - Some simple ass render graph to avoid manual barriers
+    //
 
     const p_layout = try ctx.dev.createPipelineLayout(&vk.PipelineLayoutCreateInfo{}, null);
     defer ctx.dev.destroyPipelineLayout(p_layout, null);
@@ -268,48 +270,6 @@ pub fn main() !void {
         },
     }, null, &pipes);
     defer ctx.dev.destroyPipeline(pipes[0], null);
-
-    //
-    // OPTIONAL:
-    //
-    // Render Graph: Setup chronological order
-    //
-    // const pass = graph.createPass("name");
-    // pass.addColor(0, vk.RenderingAttachmentInfoKHR, format);
-    // pass.addColor(1, vk.RenderingAttachmentInfoKHR, format);
-    // pass.addColor(2, vk.RenderingAttachmentInfoKHR, format);
-    // pass.addDepth(vk.RenderingAttachmentInfoKHR, format);
-    // pass.addStencil(vk.RenderingAttachmentInfoKHR, format);
-    //
-    // const pipeline = create_pipeline(pass.pipeline_compat, ...);
-    // ...or
-    // const pipeline = create_pipeline(graph.getPass("name").pipe_compat, ...);
-    //
-    // so:
-    // 1) Graph setup
-    //      - Declare all resource usage
-    //      - Declare logic
-    //          - Payload should containg ptr to const struct which
-    //            contains data and pipelines relevant for this pass
-    //
-    // 2) Pipeline setup
-    //      - Create pipelines based on consuming pass
-    //          (Validation layer should verify compatibility)
-    //
-    //
-    // RG creation:
-    //    for each pass in reverse chronological order:
-    //      dst = pass
-    //      for each pass-1 in reverse chronological order:
-    //          src = pass-1
-    //
-    //          // complicated.. check our impl from Rogue Robots
-    //
-    //          if (dst.read intersect src.write)       // RAW
-    //          if (dst.write intersect src.write)      // WAW
-    //          if (dst.write intersect src.read)       // RAW
-    //              put dep on dag
-    //              put barrier on each res right before dst (JIT)
 
     while (!window.shouldClose()) {
         if (window.getKey(glfw.Key.escape) == glfw.Action.press) {
