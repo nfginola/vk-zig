@@ -3,6 +3,7 @@ const nvk = @import("vtx.zig");
 const vk = @import("vulkan");
 const memh = @import("memory_helpers.zig");
 const Allocator = std.mem.Allocator;
+const vkt = @import("vk_types.zig");
 
 pub const Receipt = struct {
     start: usize,
@@ -22,23 +23,23 @@ pub const UploadContext = struct {
     top: usize = 0,
     memory: [*]u8 = undefined,
 
-    varena: *nvk.VkArena = undefined,
+    varena: *nvk.GArena = undefined,
 
-    vtx: *nvk.Context = undefined,
+    vtx: *nvk = undefined,
     vk_mem: vk.DeviceMemory = undefined,
-    vk_buf: nvk.Buffer = undefined,
+    vk_buf: vkt.Buffer = undefined,
 
     fence_on: bool = true,
 
-    cmdp_transfer: nvk.CommandPool = undefined,
-    cmdb_transfer: nvk.CommandBuffer = undefined,
-    transfer_queue: nvk.Queue = undefined,
+    cmdp_transfer: vkt.CommandPool = undefined,
+    cmdb_transfer: vkt.CommandBuffer = undefined,
+    transfer_queue: vkt.Queue = undefined,
     transfer_fence: vk.Fence = undefined,
     transfer_sem: vk.Semaphore = undefined, // Sync between ownership release and acq submits
 
-    cmdp_target: nvk.CommandPool = undefined,
-    cmdb_target: nvk.CommandBuffer = undefined,
-    target_queue: nvk.Queue = undefined,
+    cmdp_target: vkt.CommandPool = undefined,
+    cmdb_target: vkt.CommandBuffer = undefined,
+    target_queue: vkt.Queue = undefined,
     target_fence: vk.Fence = undefined,
 
     // Keep user payloads alive until submission complete
@@ -74,7 +75,7 @@ pub const UploadContext = struct {
         return rec;
     }
 
-    pub fn copy_to_buffer(self: *Self, dst: nvk.Buffer, receipt: Receipt) !void {
+    pub fn copy_to_buffer(self: *Self, dst: vkt.Buffer, receipt: Receipt) !void {
         self.cmdb_transfer.copyBuffer(self.vk_buf.hdl, dst.hdl, 1, &.{vk.BufferCopy{ .dst_offset = 0, .src_offset = receipt.start, .size = receipt.size }});
 
         // Release ownership from this dedicated transfer queue family
@@ -162,13 +163,13 @@ pub const UploadContext = struct {
         }
     }
 
-    pub fn create(ator: Allocator, vtx: *nvk.Context, target_queue: nvk.QueueType) !*Self {
+    pub fn create(ator: Allocator, vtx: *nvk, target_queue: vkt.QueueType) !*Self {
         const total_size = 64_000;
 
         const self = try ator.create(Self);
         self.* = .{};
         self.arena = memh.Arena.init(ator);
-        self.varena = try nvk.Context.createArena(ator);
+        self.varena = try vtx.createArena(ator);
         self.vtx = vtx;
 
         self.transfer_queue = self.vtx.getQueue(.transfer);

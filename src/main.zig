@@ -4,12 +4,13 @@ const zimg = @import("zigimg");
 const nvk = @import("vtx.zig");
 const vk = @import("vulkan");
 const memh = @import("memory_helpers.zig");
-const utx = @import("vk_upload_context.zig");
+const utx = @import("vk_upload.zig");
+const vkt = @import("vk_types.zig");
 
 const WIDTH = 1600;
 const HEIGHT = 900;
 
-/// Utilsault GLFW error handling callback
+/// GLFW error handling callback
 fn errorCallback(error_code: glfw.ErrorCode, description: [:0]const u8) void {
     std.log.err("glfw: {}: {s}\n", .{ error_code, description });
 }
@@ -47,7 +48,7 @@ pub fn main() !void {
     var arena = memh.Arena.init(gpa.allocator());
     defer arena.deinit();
 
-    var ctx = try nvk.Context.create(arena.ator(), .{ .name = "Vulkan Engine", .window = window });
+    var ctx = try nvk.create(arena.ator(), .{ .name = "Vulkan Engine", .window = window });
     const dev = ctx.dev;
     const gq = ctx.getQueue(.graphics);
     defer ctx.deinit();
@@ -56,7 +57,7 @@ pub fn main() !void {
     defer upload.deinit();
 
     // Top level VK resources lifetime arena
-    var varena = try nvk.Context.createArena(arena.ator());
+    var varena = try ctx.createArena(arena.ator());
     defer varena.deinit();
 
     var cmdp = try ctx.createCmdPool(varena, .graphics, .{ .transient_bit = true });
@@ -87,7 +88,7 @@ pub fn main() !void {
             .{ .x = -0.5, .y = 0.5, .z = 0.0, .u = 0.0, .v = 1.0, .w = 0.0 },
             .{ .x = 0.5, .y = 0.5, .z = 0.0, .u = 0.0, .v = 0.0, .w = 1.0 },
         };
-        const indices = [_]u32{ 0, 1, 2, 4, 50, 100, 150 };
+        const indices = [_]u32{ 0, 1, 2 };
         try upload.copy_to_buffer(vb, try upload.push(memh.byteSliceC(Vertex, vertices[0..]), 0));
         try upload.copy_to_buffer(ib, try upload.push(memh.byteSliceC(u32, indices[0..]), 0));
         try upload.submit(null);
@@ -138,7 +139,7 @@ pub fn main() !void {
 
     const target_details = vk.PipelineRenderingCreateInfoKHR{
         .color_attachment_count = 1,
-        .p_color_attachment_formats = &.{ctx.sc.format.format},
+        .p_color_attachment_formats = &.{ctx.sc.native.format.format},
         .view_mask = 0,
         .depth_attachment_format = .undefined,
         .stencil_attachment_format = .undefined,
@@ -329,7 +330,7 @@ pub fn main() !void {
                 .src_access_mask = .{},
                 .dst_access_mask = .{ .color_attachment_write_bit = true },
                 .image = sc_next.image,
-                .subresource_range = nvk.Utils.fullSubres(.{ .color_bit = true }),
+                .subresource_range = vkt.Utils.fullSubres(.{ .color_bit = true }),
                 .src_queue_family_index = gq.fam.?,
                 .dst_queue_family_index = gq.fam.?,
             },
@@ -367,7 +368,7 @@ pub fn main() !void {
                 .src_access_mask = .{ .color_attachment_write_bit = true },
                 .dst_access_mask = .{},
                 .image = sc_next.image,
-                .subresource_range = nvk.Utils.fullSubres(.{ .color_bit = true }),
+                .subresource_range = vkt.Utils.fullSubres(.{ .color_bit = true }),
                 .src_queue_family_index = gq.fam.?,
                 .dst_queue_family_index = gq.fam.?,
             },

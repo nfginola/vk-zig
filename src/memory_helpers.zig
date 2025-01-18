@@ -58,3 +58,67 @@ pub fn byteSliceC(comptime T: type, slice: []const T) []const u8 {
     var bytes: [*]const u8 = @ptrCast(@alignCast(slice));
     return bytes[0 .. slice.len * @sizeOf(T)];
 }
+
+const CleanupEntry = struct {
+    cleanup_fn: *const fn (self: *anyopaque, resource: *anyopaque) void,
+    resource: *anyopaque,
+};
+
+// ================= Callback Arena Start =================
+/// General purpose callback helper designed for an API that uses
+/// a create/destroy pair for some resource.
+///
+/// This specializes on API type T1, and a resource T to be operated on
+/// by a concrete API of type T1 at deinit() time.
+///
+pub fn CallbackArena(comptime T1: type) type {
+    return struct {
+        const Self = @This();
+
+        ctx: *anyopaque,
+        arena: Arena,
+        entries: std.ArrayList(CleanupEntry),
+
+        pub fn create(ator: Allocator, ctx: *anyopaque) !*Self {
+            var self = try ator.create(Self);
+            self.arena = Arena.init(ator);
+            self.entries = std.ArrayList(CleanupEntry).init(self.arena.ator());
+            self.ctx = ctx;
+            return self;
+        }
+
+        pub fn add(self: *Self, comptime T2: type, dest_fn: fn (*T1, T2) void, payload: T2) !void {
+            // Wraps dest_fn in an type-erased callback for storage and arranges the logic
+            // to cast back to original type
+            const opaque_cb = struct {
+                pub fn cb(ctx: *anyopaque, resource: *anyopaque) void {
+                    const ctx_: *T1 = @ptrCast(@alignCast(ctx));
+                    const res: *T2 = @ptrCast(@alignCast(resource));
+                    dest_fn(ctx_, res.*);
+                }
+            }.cb;
+
+            try self.entries.append(CleanupEntry{
+                .cleanup_fn = opaque_cb,
+                .resource = try self.alloc(T2, payload),
+            });
+        }
+
+        fn alloc(self: *Self, comptime T: type, data: T) !*anyopaque {
+            const ptr = try self.arena.ator().create(T);
+            ptr.* = data;
+            return ptr;
+        }
+
+        pub fn deinit(self: *Self) void {
+            // call each cleanup function in reverse order of allocation
+            while (self.entries.items.len > 0) {
+                const entry = self.entries.pop();
+                entry.cleanup_fn(self.ctx, entry.resource);
+            }
+            self.entries.deinit();
+            self.arena.deinit();
+        }
+    };
+}
+// ================= Callback Arena End =================
