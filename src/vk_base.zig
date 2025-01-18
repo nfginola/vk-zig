@@ -37,7 +37,7 @@ var debug_msgr: ?vk.DebugUtilsMessengerEXT = null;
 pub var vki: InstanceDispatch = undefined;
 pub var inst: Instance = undefined;
 
-pub fn initInstance(
+pub fn init(
     ator: Allocator,
     app_name: [*:0]const u8,
     get_inst_fn: vk.PfnGetInstanceProcAddr,
@@ -104,7 +104,7 @@ pub fn initInstance(
     try setupDbgMsgr();
 }
 
-pub fn deinitInstance() void {
+pub fn deinit() void {
     if (bconf.validation_layer) {
         if (debug_msgr) |msgr| {
             inst.destroyDebugUtilsMessengerEXT(msgr, null);

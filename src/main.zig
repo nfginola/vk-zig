@@ -114,9 +114,12 @@ pub fn main() !void {
     //
     //  x Use input layout and VB/IB to render triangle
     //
-    //  - Move swapchain to vsc.zig
-    //  - Refactor vtx.zig to not have to need a struct for variables and functions?
+    //  x Move swapchain to vsc.zig
+    //  x Refactor vtx.zig to not have to need a struct for variables and functions?
     //      (Look at Allocator as example)
+    //
+    //  x Refactored garbage can to be generic (nicer callsite)
+    //  x Refactored and split vk init into base for instance
     //
     //  - Add VMA support
     //
@@ -130,9 +133,6 @@ pub fn main() !void {
     //          - mat4 x v4
     //      - Use Right Handed coordinate system with Z up and Y into screen
     //
-
-    const vs_mod = try ctx.createShaderModuleFromFile(arena.ator(), varena, "res/shaders/compiled/tri.spv");
-    const fs_mod = try ctx.createShaderModuleFromFile(arena.ator(), varena, "res/shaders/compiled/pass.spv");
 
     const p_layout = try ctx.dev.createPipelineLayout(&vk.PipelineLayoutCreateInfo{}, null);
     defer ctx.dev.destroyPipelineLayout(p_layout, null);
@@ -151,12 +151,12 @@ pub fn main() !void {
             .stage_count = 2,
             .p_stages = &.{
                 vk.PipelineShaderStageCreateInfo{
-                    .module = vs_mod,
+                    .module = try ctx.createShaderModuleFromFile(arena.ator(), varena, "res/shaders/compiled/tri.spv"),
                     .stage = .{ .vertex_bit = true },
                     .p_name = "main",
                 },
                 vk.PipelineShaderStageCreateInfo{
-                    .module = fs_mod,
+                    .module = try ctx.createShaderModuleFromFile(arena.ator(), varena, "res/shaders/compiled/pass.spv"),
                     .stage = .{ .fragment_bit = true },
                     .p_name = "main",
                 },

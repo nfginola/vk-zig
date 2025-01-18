@@ -44,7 +44,7 @@ pub fn create(
         std.log.err("Failed to get required VK vkb.instance extensions for GLFW. Error = {s}", .{glfw.mustGetError().description});
         return error.MissingGlfwInstanceExtensions;
     };
-    try vkb.initInstance(ator, opts.name, get_inst_fn, glfw_exts);
+    try vkb.init(ator, opts.name, get_inst_fn, glfw_exts);
 
     try self.getPhysicalDevice(ator);
     try self.createDevice(ator);
@@ -57,7 +57,7 @@ pub fn deinit(self: *Self) void {
     self.dev.deviceWaitIdle() catch unreachable;
     self.sc.native.deinit();
     self.dev.destroyDevice(null);
-    vkb.deinitInstance();
+    vkb.deinit();
 }
 
 pub fn createArena(self: *Self, ator: Allocator) !*GArena {

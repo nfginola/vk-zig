@@ -49,11 +49,13 @@ pub const Arena = struct {
     }
 };
 
+/// Cast arbitrary slice into byte slice
 pub fn byteSlice(comptime T: type, slice: []T) []u8 {
-    const bytes: [*]u8 = @ptrCast(&slice);
+    const bytes: [*]u8 = @ptrCast(@alignCast(slice));
     return bytes[0 .. slice.len * @sizeOf(T)];
 }
 
+/// Cast arbitrary slice into byte slice
 pub fn byteSliceC(comptime T: type, slice: []const T) []const u8 {
     var bytes: [*]const u8 = @ptrCast(@alignCast(slice));
     return bytes[0 .. slice.len * @sizeOf(T)];
@@ -70,6 +72,8 @@ const CleanupEntry = struct {
 ///
 /// This specializes on API type T1, and a resource T to be operated on
 /// by a concrete API of type T1 at deinit() time.
+///
+/// Original use case (create/destroy pair for arena-style clean up)
 ///
 pub fn CallbackArena(comptime T1: type) type {
     return struct {
