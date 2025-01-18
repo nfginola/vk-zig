@@ -53,7 +53,7 @@ pub fn main() !void {
     const gq = ctx.getQueue(.graphics);
     defer ctx.deinit();
 
-    var upload = try utx.UploadContext.create(arena.ator(), ctx, .graphics);
+    var upload = try utx.create(arena.ator(), ctx);
     defer upload.deinit();
 
     // Top level VK resources lifetime arena
@@ -89,9 +89,9 @@ pub fn main() !void {
             .{ .x = 0.5, .y = 0.5, .z = 0.0, .u = 0.0, .v = 0.0, .w = 1.0 },
         };
         const indices = [_]u32{ 0, 1, 2 };
-        try upload.copy_to_buffer(vb, try upload.push(memh.byteSliceC(Vertex, vertices[0..]), 0));
-        try upload.copy_to_buffer(ib, try upload.push(memh.byteSliceC(u32, indices[0..]), 0));
-        try upload.submit(null);
+        try upload.copy_to_buffer(vb, .{ .vertex_shader_bit = true }, try upload.push(memh.byteSliceC(Vertex, vertices[0..]), 0));
+        try upload.copy_to_buffer(ib, .{ .vertex_shader_bit = true }, try upload.push(memh.byteSliceC(u32, indices[0..]), 0));
+        try upload.submit(.graphics, null);
         try upload.host_wait();
     }
 
@@ -336,6 +336,41 @@ pub fn main() !void {
 
         cmdb.endCommandBuffer() catch unreachable;
 
+        // Lets not do multiple GPU FIF. We just act as if this is D3D12,
+        // and we have a semaphore chain to sequentialize the work on the queue.
+        //
+        // This essentially means that the CPU can keep running until we hit our FIF threshold
+        // (lets say 3), and the Queue semaphore wait/signals would be chained like so:
+        //
+        // F0: wait(F2), signal(F0 done)     --> special case first frame: dont wait for F2 (nothing to wait)
+        // F1: wait(F0), signal(F1 done)         or use timeline semaphores (out of order signal/wait )
+        // F2: wait(F1), signal(F2 done)        https://docs.vulkan.org/samples/latest/samples/extensions/timeline_semaphore/README.html
+        //
+        // We just let CPU run, there's enough GPU workload to be done for a single frame
+        // for "GPU-side" work interleaving to be beneficial, I assume.
+        // We're always chasing frame targets! And we get input lag too otherwise.
+        //
+        // https://www.reddit.com/r/vulkan/comments/ypla0h/deferred_rendering_questions/
+        //
+        // DX: https://www.gamedev.net/forums/topic/712136-d3d12-vulkan-metal-triple-buffer-everything-i-saw-depth-stencil-buffer-is-never-for-example/
+        //
+        // I still need to FIF-buffer any CPU-GPU data!:
+        //
+        // F0 --> write to F0 uniform, F0 reads..
+        // F1 --> write to F0 uniform, F1 reads..   --> write illegal!
+        //
+        // F1 only waits for F0 GPU side, on CPU side we can't know unless we explicitly wait for fence (F0 GPU completion)
+        // (which we don't want since we want CPU to keep running).
+        //
+        // F0 --> write to F0 uniform, F0 reads..
+        // F1 --> write to F1 uniform, F1 reads..
+        // F2 --> write to F2 uniform, F1 reads..
+        //
+        // assuming F0 will then wait for Fence(F0) (previous loops F0),
+        // only then can we be sure to write again to it (GPU done reading)
+        //
+        //
+
         try gq.api.submit(1, &.{
             vk.SubmitInfo{
                 .command_buffer_count = 1,
@@ -353,6 +388,5 @@ pub fn main() !void {
         glfw.pollEvents();
     }
 
-    // Wait for idle before any resource destruction
     dev.deviceWaitIdle() catch unreachable;
 }
