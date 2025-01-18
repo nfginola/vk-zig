@@ -84,13 +84,3 @@ pub const Utils = struct {
         };
     }
 };
-
-/// TODO:
-/// CPU-visible GPU memory stack allocator for per-frame dynamic data
-pub const GPUStack = struct {
-    buf: Buffer,
-    mem: vk.DeviceMemory,
-
-    // push
-    // reset
-};

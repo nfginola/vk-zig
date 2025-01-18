@@ -6,6 +6,7 @@ const vk = @import("vulkan");
 const memh = @import("memory_helpers.zig");
 const utx = @import("vk_upload.zig");
 const vkt = @import("vk_types.zig");
+const vkds = @import("vk_ds.zig");
 
 const WIDTH = 1600;
 const HEIGHT = 900;
@@ -122,6 +123,16 @@ pub fn main() !void {
     //
     //  x Refactored garbage can to be generic (nicer callsite)
     //  x Refactored and split vk init into base for instance
+    //
+    //  - Stack allocator for per frame data
+    //  - Run shader with time based colors
+    //      - Naive
+    //          - PipelineLayout
+    //          - Descriptor Pool
+    //          - Update descriptor set
+    //      - Descriptor indexing
+    //
+    //  - Make Gfx pipeline helpers
     //
     //  - Add VMA support
     //
@@ -272,6 +283,9 @@ pub fn main() !void {
         },
     }, null, &pipes);
     defer ctx.dev.destroyPipeline(pipes[0], null);
+
+    const pf_stack = try vkds.Stack.init(varena, ctx, .{});
+    _ = pf_stack;
 
     while (!window.shouldClose()) {
         if (window.getKey(glfw.Key.escape) == glfw.Action.press) {

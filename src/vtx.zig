@@ -10,7 +10,7 @@ const memh = @import("memory_helpers.zig");
 const Self = @This();
 
 // Graphics Arena Allocator
-pub const GArena = memh.CallbackArena(Self);
+pub const Arena = memh.CallbackArena(Self);
 
 pub const InitOptions = struct {
     name: [*:0]const u8 = "Default Name",
@@ -60,8 +60,8 @@ pub fn deinit(self: *Self) void {
     vkb.deinit();
 }
 
-pub fn createArena(self: *Self, ator: Allocator) !*GArena {
-    return GArena.create(ator, self);
+pub fn createArena(self: *Self, ator: Allocator) !*Arena {
+    return Arena.create(ator, self);
 }
 
 pub fn waitForFences(self: *Self, fences: []const vk.Fence) !void {
@@ -81,13 +81,13 @@ pub fn getQueue(self: *Self, qtype: vkt.QueueType) vkt.Queue {
     return self.queues[@intFromEnum(qtype)];
 }
 
-pub fn createShaderModuleFromFile(self: *Self, ator: Allocator, maybe_varena: ?*GArena, fpath: []const u8) !vk.ShaderModule {
+pub fn createShaderModuleFromFile(self: *Self, ator: Allocator, maybe_varena: ?*Arena, fpath: []const u8) !vk.ShaderModule {
     const file = try std.fs.cwd().openFile(fpath, .{});
     defer file.close();
     return try self.createShaderModule(maybe_varena orelse null, try file.reader().readAllAlloc(ator, std.math.maxInt(usize)));
 }
 
-pub fn createShaderModule(self: *Self, maybe_varena: ?*GArena, binary: []u8) !vk.ShaderModule {
+pub fn createShaderModule(self: *Self, maybe_varena: ?*Arena, binary: []u8) !vk.ShaderModule {
     const mod = try self.dev.createShaderModule(&.{
         .code_size = binary.len,
         .p_code = @ptrCast(@alignCast(binary.ptr)),
@@ -104,7 +104,7 @@ pub fn destroyShaderModule(self: *Self, module: vk.ShaderModule) void {
     self.dev.destroyShaderModule(module, null);
 }
 
-pub fn createCmdPool(self: *Self, maybe_varena: ?*GArena, qtype: vkt.QueueType, flags: vk.CommandPoolCreateFlags) !vkt.CommandPool {
+pub fn createCmdPool(self: *Self, maybe_varena: ?*Arena, qtype: vkt.QueueType, flags: vk.CommandPoolCreateFlags) !vkt.CommandPool {
     const pool = vkt.CommandPool{
         .devd = self.devd,
         .dev = self.dev,
@@ -122,7 +122,7 @@ pub fn destroyCmdPool(self: *Self, pool: vkt.CommandPool) void {
     self.dev.destroyCommandPool(pool.hdl, null);
 }
 
-pub fn createFence(self: *Self, maybe_varena: ?*GArena, flags: vk.FenceCreateFlags) !vk.Fence {
+pub fn createFence(self: *Self, maybe_varena: ?*Arena, flags: vk.FenceCreateFlags) !vk.Fence {
     const f = try self.dev.createFence(&.{ .flags = flags }, null);
 
     if (maybe_varena) |varena| {
@@ -132,7 +132,7 @@ pub fn createFence(self: *Self, maybe_varena: ?*GArena, flags: vk.FenceCreateFla
     return f;
 }
 
-pub fn createSemaphore(self: *Self, maybe_varena: ?*GArena) !vk.Semaphore {
+pub fn createSemaphore(self: *Self, maybe_varena: ?*Arena) !vk.Semaphore {
     const sem = try self.dev.createSemaphore(&.{}, null);
 
     if (maybe_varena) |varena| {
@@ -150,7 +150,7 @@ pub fn destroySemaphore(self: *Self, hdl: vk.Semaphore) void {
     self.dev.destroySemaphore(hdl, null);
 }
 
-pub fn allocateMemory(self: *Self, maybe_varena: ?*GArena, mem_type: vkt.MemoryType, size: u64) !vk.DeviceMemory {
+pub fn allocateMemory(self: *Self, maybe_varena: ?*Arena, mem_type: vkt.MemoryType, size: u64) !vk.DeviceMemory {
     const mem = try self.dev.allocateMemory(&vk.MemoryAllocateInfo{
         .allocation_size = size,
         .memory_type_index = self.memory_heaps[@intFromEnum(mem_type)],
@@ -167,7 +167,7 @@ pub fn freeMemory(self: *Self, mem: vk.DeviceMemory) void {
     self.dev.freeMemory(mem, null);
 }
 
-pub fn createBuffer(self: *Self, maybe_varena: ?*GArena, size: u64, usage: vk.BufferUsageFlags) !vkt.Buffer {
+pub fn createBuffer(self: *Self, maybe_varena: ?*Arena, size: u64, usage: vk.BufferUsageFlags) !vkt.Buffer {
     const buf = vkt.Buffer{ .hdl = try self.dev.createBuffer(&vk.BufferCreateInfo{
         .sharing_mode = .exclusive,
         .size = size,

@@ -24,7 +24,7 @@ memory: [*]u8 = undefined,
 
 // Keep user payloads alive until submission complete
 arena: memh.Arena = undefined,
-varena: *nvk.GArena = undefined,
+varena: *nvk.Arena = undefined,
 
 vtx: *nvk = undefined,
 vk_mem: vk.DeviceMemory = undefined,
