@@ -61,29 +61,29 @@ pub fn byteSliceC(comptime T: type, slice: []const T) []const u8 {
     return bytes[0 .. slice.len * @sizeOf(T)];
 }
 
-const CleanupEntry = struct {
-    cleanup_fn: *const fn (self: *anyopaque, resource: *anyopaque) void,
-    resource: *anyopaque,
-};
-
 // ================= Callback Arena Start =================
 /// General purpose callback helper designed for an API that uses
 /// a create/destroy pair for some resource.
 ///
-/// This specializes on API type T1, and a resource T to be operated on
+/// This specializes on API type T1, and a resource T2 to be operated on
 /// by a concrete API of type T1 at deinit() time.
 ///
 /// Original use case (create/destroy pair for arena-style clean up)
 ///
 pub fn CallbackArena(comptime T1: type) type {
+    const CleanupEntry = struct {
+        cleanup_fn: *const fn (self: *T1, resource: *anyopaque) void,
+        resource: *anyopaque,
+    };
+
     return struct {
         const Self = @This();
 
-        ctx: *anyopaque,
+        ctx: *T1,
         arena: Arena,
         entries: std.ArrayList(CleanupEntry),
 
-        pub fn create(ator: Allocator, ctx: *anyopaque) !*Self {
+        pub fn create(ator: Allocator, ctx: *T1) !*Self {
             var self = try ator.create(Self);
             self.arena = Arena.init(ator);
             self.entries = std.ArrayList(CleanupEntry).init(self.arena.ator());
@@ -95,10 +95,9 @@ pub fn CallbackArena(comptime T1: type) type {
             // Wraps dest_fn in an type-erased callback for storage and arranges the logic
             // to cast back to original type
             const opaque_cb = struct {
-                pub fn cb(ctx: *anyopaque, resource: *anyopaque) void {
-                    const ctx_: *T1 = @ptrCast(@alignCast(ctx));
+                pub fn cb(ctx: *T1, resource: *anyopaque) void {
                     const res: *T2 = @ptrCast(@alignCast(resource));
-                    dest_fn(ctx_, res.*);
+                    dest_fn(ctx, res.*);
                 }
             }.cb;
 
