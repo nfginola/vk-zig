@@ -89,6 +89,8 @@ pub fn main() !void {
             .{ .x = 0.5, .y = 0.5, .z = 0.0, .u = 0.0, .v = 0.0, .w = 1.0 },
         };
         const indices = [_]u32{ 0, 1, 2 };
+        // try upload.copy_to_buffer(ib, .{ .transfer_bit = true }, try upload.push(memh.byteSliceC(u32, indices[0..]), 0));
+        // try upload.submit(.compute, null);
         try upload.copy_to_buffer(vb, .{ .vertex_shader_bit = true }, try upload.push(memh.byteSliceC(Vertex, vertices[0..]), 0));
         try upload.copy_to_buffer(ib, .{ .vertex_shader_bit = true }, try upload.push(memh.byteSliceC(u32, indices[0..]), 0));
         try upload.submit(.graphics, null);

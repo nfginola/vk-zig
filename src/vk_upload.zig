@@ -208,6 +208,7 @@ pub fn submit(self: *Self, target: vkt.QueueType, sem_out: ?vk.Semaphore) !void 
 
     // CPU payload submitted, can release
     self.top = 0;
+    self.copies.clearAndFree();
     _ = self.arena.arena.reset(.retain_capacity);
 
     self.fence_on = true;
