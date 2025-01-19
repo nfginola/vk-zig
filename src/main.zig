@@ -121,6 +121,8 @@ pub fn main() !void {
     //  x Refactored and split vk init into base for instance
     //
     //  x Stack allocator for per frame data
+    //  x FIF
+    //
     //  - Run shader with time based colors
     //      - Naive
     //          - PipelineLayout
@@ -145,7 +147,77 @@ pub fn main() !void {
     //  - Some simple ass render graph to avoid manual barriers
     //
 
-    const p_layout = try ctx.dev.createPipelineLayout(&vk.PipelineLayoutCreateInfo{}, null);
+    var pf_stack = try vkds.Stack.init(varena, ctx, .{ .rr_block_size = 2048, .rr_blocks = MAX_FIF });
+
+    // ======================== SETUP UBO
+    const TestUBO = struct {
+        r: f32,
+        g: f32,
+        b: f32,
+    };
+
+    // Make Pool of descriptors with certain template(s) (ator)
+    const dpool = try ctx.dev.createDescriptorPool(&vk.DescriptorPoolCreateInfo{
+        .max_sets = 12,
+        .pool_size_count = 1,
+        .p_pool_sizes = &.{
+            vk.DescriptorPoolSize{ .descriptor_count = 100, .type = .uniform_buffer },
+        },
+    }, null);
+    defer ctx.dev.destroyDescriptorPool(dpool, null);
+
+    // Make descriptor memory template (specific combo)
+    const dlayout = try ctx.dev.createDescriptorSetLayout(&vk.DescriptorSetLayoutCreateInfo{
+        .binding_count = 1,
+        .p_bindings = &.{
+            vk.DescriptorSetLayoutBinding{
+                .binding = 0,
+                .descriptor_count = 1,
+                .descriptor_type = .uniform_buffer,
+                .stage_flags = .{ .vertex_bit = true },
+            },
+        },
+    }, null);
+    defer ctx.dev.destroyDescriptorSetLayout(dlayout, null);
+
+    // Allocate descriptor set
+    var dsets: [MAX_FIF]vk.DescriptorSet = undefined;
+    _ = try ctx.dev.allocateDescriptorSets(&vk.DescriptorSetAllocateInfo{
+        .descriptor_pool = dpool,
+        .descriptor_set_count = MAX_FIF,
+        .p_set_layouts = &.{ dlayout, dlayout },
+    }, &dsets);
+
+    // Write to set
+    for (dsets, 0..) |dset, frame| {
+        const binfo = vk.DescriptorBufferInfo{
+            .buffer = pf_stack.buf.hdl,
+            .offset = pf_stack.getOffset(@intCast(frame)),
+            .range = pf_stack.getBlockSize(),
+        };
+        const write = vk.WriteDescriptorSet{
+            .dst_set = dset,
+            .dst_binding = 0,
+            .dst_array_element = 0,
+            .p_image_info = &.{vk.DescriptorImageInfo{
+                .image_layout = .undefined,
+                .image_view = .null_handle,
+                .sampler = .null_handle,
+            }},
+            .p_texel_buffer_view = &.{.null_handle},
+            .descriptor_count = 1,
+            .descriptor_type = .uniform_buffer,
+            .p_buffer_info = &.{binfo},
+        };
+        ctx.dev.updateDescriptorSets(1, &.{write}, 0, null);
+    }
+
+    // ======================== SETUP UBO
+
+    const p_layout = try ctx.dev.createPipelineLayout(&vk.PipelineLayoutCreateInfo{
+        .set_layout_count = 1,
+        .p_set_layouts = &.{dlayout},
+    }, null);
     defer ctx.dev.destroyPipelineLayout(p_layout, null);
 
     const target_details = vk.PipelineRenderingCreateInfoKHR{
@@ -280,9 +352,6 @@ pub fn main() !void {
     }, null, &pipes);
     defer ctx.dev.destroyPipeline(pipes[0], null);
 
-    const pf_stack = try vkds.Stack.init(varena, ctx, .{});
-    _ = pf_stack;
-
     const PerFrame = struct {
         cmdp: vkt.CommandPool,
         sem_img_acq: vk.Semaphore,
@@ -310,11 +379,38 @@ pub fn main() !void {
 
     var prev_pf: PerFrame = pf[0];
     var curr_f: u32 = 1;
+
+    var dt: f32 = 0.0; // in s
+    var display_dt_interval: f32 = 1.0; // in s
+    var elapsed: f32 = 0.0; // in s
+
     while (!window.shouldClose()) {
         defer first_frame = false;
         if (window.getKey(glfw.Key.escape) == glfw.Action.press) {
             break;
         }
+
+        const start_time = std.time.microTimestamp();
+        defer {
+            const end_time = std.time.microTimestamp();
+            dt = @as(f32, @floatFromInt(end_time - start_time)) / 1_000_000.0;
+
+            elapsed += dt;
+
+            display_dt_interval -= dt;
+            if (display_dt_interval < 0) {
+                std.debug.print("Frame: {d:.6} ms ({d:.2} FPS)\n", .{ dt * 1000.0, 1.0 / dt });
+                std.debug.print("Elapsed: {d:.1} seconds\n", .{elapsed});
+                display_dt_interval = 1.0;
+            }
+        }
+
+        const dyn = try pf_stack.grab(TestUBO, 0);
+        dyn.r = @cos(elapsed + dt * 8) * 0.5 + 0.5;
+        dyn.g = @sin(elapsed + dt * 2) * 0.5 + 0.5;
+        dyn.b = @sin(elapsed + dt * 3) * 0.5 + 0.5;
+        defer pf_stack.next_block();
+
         const curr_pf = pf[curr_f];
         defer curr_f = (curr_f + 1) % MAX_FIF;
         defer prev_pf = pf[curr_f];
@@ -358,6 +454,8 @@ pub fn main() !void {
             .p_color_attachments = &.{color_att},
             .view_mask = 0,
         };
+        cmdb.bindDescriptorSets(.graphics, p_layout, 0, 1, &.{dsets[curr_f]}, 0, null);
+
         cmdb.beginRenderingKHR(&rinfo);
         cmdb.bindPipeline(.graphics, pipes[0]);
         cmdb.bindVertexBuffers(0, 1, &.{vb.hdl}, &.{0});

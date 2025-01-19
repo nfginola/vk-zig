@@ -216,7 +216,7 @@ pub fn submit(self: *Self, target: vkt.QueueType, sem_out: ?vk.Semaphore) !void 
         _ = try target_queue.api.submit(1, &.{ci}, self.target_fence);
     }
 
-    // CPU payload submitted, can release
+    // CPU payload submitted, can release transient info
     self.top = 0;
     self.copies.clearAndFree();
     _ = self.arena.arena.reset(.retain_capacity);
