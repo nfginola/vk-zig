@@ -10,6 +10,7 @@ const vkds = @import("vk_ds.zig");
 
 const WIDTH = 1600;
 const HEIGHT = 900;
+const MAX_FIF = 2;
 
 /// GLFW error handling callback
 fn errorCallback(error_code: glfw.ErrorCode, description: [:0]const u8) void {
@@ -60,11 +61,6 @@ pub fn main() !void {
     // Top level VK resources lifetime arena
     var varena = try ctx.createArena(arena.ator());
     defer varena.deinit();
-
-    var cmdp = try ctx.createCmdPool(varena, .graphics, .{ .transient_bit = true });
-    const clear_finished_sem = try ctx.createSemaphore(varena);
-    const sc_img_acquired_sem = try ctx.createSemaphore(varena);
-    const cmdb_finished_fence = try ctx.createFence(varena, .{ .signaled_bit = true });
 
     const vb = try ctx.createBuffer(varena, 32_000, .{ .vertex_buffer_bit = true, .transfer_dst_bit = true });
     const ib = try ctx.createBuffer(varena, 32_000, .{ .index_buffer_bit = true, .transfer_dst_bit = true });
@@ -124,7 +120,7 @@ pub fn main() !void {
     //  x Refactored garbage can to be generic (nicer callsite)
     //  x Refactored and split vk init into base for instance
     //
-    //  - Stack allocator for per frame data
+    //  x Stack allocator for per frame data
     //  - Run shader with time based colors
     //      - Naive
     //          - PipelineLayout
@@ -287,13 +283,46 @@ pub fn main() !void {
     const pf_stack = try vkds.Stack.init(varena, ctx, .{});
     _ = pf_stack;
 
+    const PerFrame = struct {
+        cmdp: vkt.CommandPool,
+        sem_img_acq: vk.Semaphore,
+        sem_ready_present: vk.Semaphore, // for present queue TODO: consider using timeline semaphores
+        sem_work_finished: vk.Semaphore, // for future frames
+        fence_work_finished: vk.Fence,
+
+        // sanity check
+        id: usize,
+    };
+
+    var pf: [MAX_FIF]PerFrame = undefined;
+    for (&pf, 0..) |*f, i| {
+        f.cmdp = try ctx.createCmdPool(varena, .graphics, .{ .transient_bit = true });
+        f.sem_img_acq = try ctx.createSemaphore(varena);
+        f.sem_ready_present = try ctx.createSemaphore(varena);
+        f.sem_work_finished = try ctx.createSemaphore(varena);
+        f.fence_work_finished = try ctx.createFence(varena, .{ .signaled_bit = true });
+        f.id = i;
+    }
+
+    // Hack for semaphore waiting, consider using timeline semaphores
+    // to be able to wait for an monotonically increasing counter..
+    var first_frame: bool = true;
+
+    var prev_pf: PerFrame = pf[0];
+    var curr_f: u32 = 1;
     while (!window.shouldClose()) {
+        defer first_frame = false;
         if (window.getKey(glfw.Key.escape) == glfw.Action.press) {
             break;
         }
+        const curr_pf = pf[curr_f];
+        defer curr_f = (curr_f + 1) % MAX_FIF;
+        defer prev_pf = pf[curr_f];
 
-        try ctx.waitResetFences(&[_]vk.Fence{cmdb_finished_fence});
-        const sc_next = try ctx.sc.getNext(sc_img_acquired_sem, null);
+        var cmdp = curr_pf.cmdp;
+
+        try ctx.waitResetFences(&[_]vk.Fence{curr_pf.fence_work_finished});
+        const sc_next = try ctx.sc.getNext(curr_pf.sem_img_acq, null);
 
         try cmdp.reset(.{});
         var cmdb = try cmdp.alloc(.primary, 1);
@@ -352,6 +381,25 @@ pub fn main() !void {
 
         cmdb.endCommandBuffer() catch unreachable;
 
+        try gq.api.submit(1, &.{
+            vk.SubmitInfo{
+                .command_buffer_count = 1,
+                .p_command_buffers = &.{cmdb.handle},
+                .signal_semaphore_count = 2,
+                .p_signal_semaphores = &.{ curr_pf.sem_ready_present, curr_pf.sem_work_finished },
+                // Ensure single GPU FIF by waiting for previous frames queue submit work to finish:
+                // emulate D3D12 queue submit guarantees. This way transient per-frame resources are truly transient .
+                // (no multi-buffering needed)
+                .wait_semaphore_count = if (first_frame) 1 else 2,
+                .p_wait_semaphores = &.{ curr_pf.sem_img_acq, prev_pf.sem_work_finished },
+                .p_wait_dst_stage_mask = &.{ .{ .top_of_pipe_bit = true }, .{ .top_of_pipe_bit = true } },
+            },
+        }, curr_pf.fence_work_finished);
+
+        try ctx.sc.present(gq, curr_pf.sem_ready_present);
+
+        glfw.pollEvents();
+
         // Lets not do multiple GPU FIF. We just act as if this is D3D12,
         // and we have a semaphore chain to sequentialize the work on the queue.
         //
@@ -386,22 +434,6 @@ pub fn main() !void {
         // only then can we be sure to write again to it (GPU done reading)
         //
         //
-
-        try gq.api.submit(1, &.{
-            vk.SubmitInfo{
-                .command_buffer_count = 1,
-                .p_command_buffers = &.{cmdb.handle},
-                .p_signal_semaphores = &.{clear_finished_sem},
-                .signal_semaphore_count = 1,
-                .p_wait_semaphores = &.{sc_img_acquired_sem},
-                .wait_semaphore_count = 1,
-                .p_wait_dst_stage_mask = &.{.{ .top_of_pipe_bit = true }},
-            },
-        }, cmdb_finished_fence);
-
-        try ctx.sc.present(gq, clear_finished_sem);
-
-        glfw.pollEvents();
     }
 
     dev.deviceWaitIdle() catch unreachable;

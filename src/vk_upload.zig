@@ -192,7 +192,17 @@ pub fn submit(self: *Self, target: vkt.QueueType, sem_out: ?vk.Semaphore) !void 
     // qf ownership acqusition for target family
     {
         try self.cmdb_target.beginCommandBuffer(&vk.CommandBufferBeginInfo{ .flags = .{ .one_time_submit_bit = true } });
-        self.cmdb_target.pipelineBarrier(.{ .transfer_bit = true }, .{ .top_of_pipe_bit = true }, .{}, 0, null, @intCast(buf_acqs.items.len), @ptrCast(buf_acqs.items.ptr), 0, null);
+        self.cmdb_target.pipelineBarrier(
+            .{ .transfer_bit = true },
+            .{ .top_of_pipe_bit = true },
+            .{},
+            0,
+            null,
+            @intCast(buf_acqs.items.len),
+            @ptrCast(buf_acqs.items.ptr),
+            0,
+            null,
+        );
         try self.cmdb_target.endCommandBuffer();
         const ci = vk.SubmitInfo{
             .p_command_buffers = &.{self.cmdb_target.handle},
