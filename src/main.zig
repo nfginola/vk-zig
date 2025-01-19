@@ -124,10 +124,10 @@ pub fn main() !void {
     //  x FIF
     //
     //  - Run shader with time based colors
-    //      - Naive
-    //          - PipelineLayout
-    //          - Descriptor Pool
-    //          - Update descriptor set
+    //      x Naive
+    //          x PipelineLayout
+    //          x Descriptor Pool
+    //          x Update descriptor set
     //      - Descriptor indexing
     //
     //  - Make Gfx pipeline helpers
@@ -353,6 +353,10 @@ pub fn main() !void {
     defer ctx.dev.destroyPipeline(pipes[0], null);
 
     const PerFrame = struct {
+        // cpu
+        farena: memh.Arena, // frame arena
+
+        // gpu
         cmdp: vkt.CommandPool,
         sem_img_acq: vk.Semaphore,
         sem_ready_present: vk.Semaphore, // for present queue TODO: consider using timeline semaphores
@@ -365,11 +369,16 @@ pub fn main() !void {
 
     var pf: [MAX_FIF]PerFrame = undefined;
     for (&pf, 0..) |*f, i| {
+        // cpu
+        f.farena = memh.Arena.init(arena.ator());
+
+        // gpu
         f.cmdp = try ctx.createCmdPool(varena, .graphics, .{ .transient_bit = true });
         f.sem_img_acq = try ctx.createSemaphore(varena);
         f.sem_ready_present = try ctx.createSemaphore(varena);
         f.sem_work_finished = try ctx.createSemaphore(varena);
         f.fence_work_finished = try ctx.createFence(varena, .{ .signaled_bit = true });
+
         f.id = i;
     }
 
@@ -381,11 +390,18 @@ pub fn main() !void {
     var curr_f: u32 = 1;
 
     var dt: f32 = 0.0; // in s
-    var display_dt_interval: f32 = 1.0; // in s
+    const init_disp_interval = 0.01;
+    var display_dt_interval: f32 = init_disp_interval; // in s
     var elapsed: f32 = 0.0; // in s
 
     while (!window.shouldClose()) {
         defer first_frame = false;
+        var curr_pf = pf[curr_f];
+        defer curr_f = (curr_f + 1) % MAX_FIF;
+        defer prev_pf = pf[curr_f];
+
+        defer _ = curr_pf.farena.arena.reset(.retain_capacity);
+
         if (window.getKey(glfw.Key.escape) == glfw.Action.press) {
             break;
         }
@@ -399,9 +415,14 @@ pub fn main() !void {
 
             display_dt_interval -= dt;
             if (display_dt_interval < 0) {
-                std.debug.print("Frame: {d:.6} ms ({d:.2} FPS)\n", .{ dt * 1000.0, 1.0 / dt });
-                std.debug.print("Elapsed: {d:.1} seconds\n", .{elapsed});
-                display_dt_interval = 1.0;
+                const title = std.fmt.allocPrintZ(
+                    curr_pf.farena.ator(),
+                    "Graphics Application - {d:.2}- {d:.3} ms ({d:.0} FPS)",
+                    .{ elapsed, dt * 1000.0, 1.0 / dt },
+                ) catch unreachable;
+                window.setTitle(title);
+
+                display_dt_interval = init_disp_interval;
             }
         }
 
@@ -410,10 +431,6 @@ pub fn main() !void {
         dyn.g = @sin(elapsed + dt * 2) * 0.5 + 0.5;
         dyn.b = @sin(elapsed + dt * 3) * 0.5 + 0.5;
         defer pf_stack.next_block();
-
-        const curr_pf = pf[curr_f];
-        defer curr_f = (curr_f + 1) % MAX_FIF;
-        defer prev_pf = pf[curr_f];
 
         var cmdp = curr_pf.cmdp;
 

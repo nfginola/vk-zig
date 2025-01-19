@@ -133,6 +133,17 @@ pub fn createFence(self: *Self, maybe_varena: ?*Arena, flags: vk.FenceCreateFlag
 }
 
 pub fn createSemaphore(self: *Self, maybe_varena: ?*Arena) !vk.Semaphore {
+    // Use timeline semaphore (core 1.2)
+    // TODO: https://www.khronos.org/blog/vulkan-timeline-semaphores
+    // const timeline_ci = vk.SemaphoreTypeCreateInfo{
+    //     .initial_value = 0,
+    //     .semaphore_type = .timeline,
+    // };
+    //
+    // const sem = try self.dev.createSemaphore(&.{
+    //     .p_next = &timeline_ci,
+    // }, null);
+
     const sem = try self.dev.createSemaphore(&.{}, null);
 
     if (maybe_varena) |varena| {
