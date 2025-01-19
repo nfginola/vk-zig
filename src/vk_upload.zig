@@ -20,7 +20,7 @@ const Self = @This();
 // - reset
 
 top: usize = 0,
-memory: [*]u8 = undefined,
+memory: []u8 = undefined,
 
 // Keep user payloads alive until submission complete
 arena: memh.Arena = undefined,
@@ -71,7 +71,7 @@ pub fn push(self: *Self, data: []const u8, alignment: usize) !Receipt {
         start = self.top + (alignment - (self.top % alignment)) * @intFromBool(align_up);
     }
 
-    @memcpy(self.memory[start..], data[0..data.len]);
+    @memcpy(self.memory[start..(start + data.len)], data[0..]);
     self.top = start + data.len;
 
     const rec = Receipt{ .start = start, .memory = null, .size = data.len };
@@ -235,9 +235,7 @@ pub fn host_wait(self: *Self) !void {
     }
 }
 
-pub fn create(ator: Allocator, vtx: *nvk) !*Self {
-    const total_size = 64_000;
-
+pub fn create(ator: Allocator, total_size: u32, vtx: *nvk) !*Self {
     const self = try ator.create(Self);
     self.* = .{};
     self.arena = memh.Arena.init(ator);

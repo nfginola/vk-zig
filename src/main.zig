@@ -55,7 +55,7 @@ pub fn main() !void {
     const gq = ctx.getQueue(.graphics);
     defer ctx.deinit();
 
-    var upload = try utx.create(arena.ator(), ctx);
+    var upload = try utx.create(arena.ator(), 64_000, ctx);
     defer upload.deinit();
 
     // Top level VK resources lifetime arena
