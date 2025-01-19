@@ -4,9 +4,9 @@ out gl_PerVertex {
     vec4 gl_Position;
 };
 
-layout(binding = 0) uniform UBO {
+layout(set = 0, binding = 0) uniform UBO {
     vec3 rgb;
-} ubo;
+} ubos[];
 
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inColor;
@@ -31,6 +31,10 @@ void main() {
     gl_Position = vec4(inPosition, 1.0);
     // fragColor = vec3(1.0);
     fragColor = inColor;
-    fragColor = ubo.rgb;
+    vec3 b1 = ubos[0].rgb;      // f0 resource
+    vec3 b2 = ubos[1].rgb;      // f1 resource
+    vec3 b3 = ubos[99].rgb;     // no resource, zeroed
+    vec3 col = b1 + b2 + b3;
+    fragColor = col;
 
 }

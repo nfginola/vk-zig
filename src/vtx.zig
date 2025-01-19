@@ -319,17 +319,40 @@ fn createDevice(self: *Self, ator: Allocator) !void {
         });
     }
 
+    // Query descriptor indexing features:
+    // Pass DDI feats with proper sType to PhysDev pNext and it gets filled for us.
+    // Assume pNext is matched with all possible available sType (for this query)
+    // and that it recursively checks any following pNext inside that structure (linked list of pNext)
+    var ddi_feats: vk.PhysicalDeviceDescriptorIndexingFeatures = .{};
+    var feats: vk.PhysicalDeviceFeatures2 = .{ .p_next = &ddi_feats, .features = undefined };
     // Turn on/off features available in the physical device
-    const feats = vkb.inst.getPhysicalDeviceFeatures(self.pd);
+    vkb.inst.getPhysicalDeviceFeatures2(self.pd, &feats);
+
+    // TODO: Just assume all supported and pass on to device creation
+    //       Return no error for now if something missing
+    // if (ddi_feats.descriptor_binding_uniform_buffer_update_after_bind == vk.TRUE) {
+    //     std.debug.print("yay\n", .{});
+    // } else {
+    //     std.debug.print("nay\n", .{});
+    // }
 
     // Queue capabilities are dependent on queue family identified by index
     const dev = try vkb.inst.createDevice(self.pd, &vk.DeviceCreateInfo{
-        .p_next = &vk.PhysicalDeviceDynamicRenderingFeaturesKHR{ .dynamic_rendering = vk.TRUE }, // VL says we need to enable it here for dynamic rendering
         .queue_create_info_count = @intCast(q_cinfos.items.len),
         .p_queue_create_infos = @ptrCast(q_cinfos.items),
-        .enabled_extension_count = 2,
-        .pp_enabled_extension_names = &.{ vk.extensions.khr_swapchain.name, vk.extensions.khr_dynamic_rendering.name },
-        .p_enabled_features = &feats,
+        .enabled_extension_count = 4,
+        .pp_enabled_extension_names = &.{
+            vk.extensions.khr_swapchain.name,
+            vk.extensions.khr_dynamic_rendering.name,
+            vk.extensions.ext_descriptor_indexing.name,
+            // Works around a validation layer bug with descriptor pool allocation with VARIABLE_COUNT.
+            // See: https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/2350.
+            vk.extensions.khr_maintenance_1.name,
+        },
+        .p_enabled_features = &feats.features,
+        // Enable dynamic rendering
+        // Enable DDI (additional)
+        .p_next = &vk.PhysicalDeviceDynamicRenderingFeaturesKHR{ .dynamic_rendering = vk.TRUE, .p_next = &ddi_feats },
     }, null);
 
     self.devd = try vkb.DeviceDispatch.load(dev, vkb.vki.dispatch.vkGetDeviceProcAddr);

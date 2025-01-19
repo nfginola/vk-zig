@@ -130,6 +130,24 @@ pub fn main() !void {
     //          x Update descriptor set
     //      - Descriptor indexing
     //
+    //  - Swapchain recreation on resize
+    //      - Naive deviceWait preferred
+    //      - Since this happens after vkWaitResetFences and we
+    //        have yet to wait on any previous semaphores, we
+    //        dont need to discard any of those resources and
+    //        should resume again on the same PerFrame data once
+    //        SC resources have been recreated.
+    //        --> getNext() should have a while() or similar to recreate
+    //
+    //        This can fail on Present too.. at that point the sync items
+    //        for the queue submit is still fine.
+    //
+    //        In other words, one getNext() and present(),
+    //        ensure that SC is recreated inside before returning to
+    //        normal ensuring normal PF stepping
+    //
+    //
+    //
     //  - Make Gfx pipeline helpers
     //
     //  - Add VMA support
@@ -156,49 +174,69 @@ pub fn main() !void {
         b: f32,
     };
 
-    // Make Pool of descriptors with certain template(s) (ator)
-    const dpool = try ctx.dev.createDescriptorPool(&vk.DescriptorPoolCreateInfo{
-        .max_sets = 12,
-        .pool_size_count = 1,
-        .p_pool_sizes = &.{
-            vk.DescriptorPoolSize{ .descriptor_count = 100, .type = .uniform_buffer },
-        },
-    }, null);
-    defer ctx.dev.destroyDescriptorPool(dpool, null);
-
     // Make descriptor memory template (specific combo)
     const dlayout = try ctx.dev.createDescriptorSetLayout(&vk.DescriptorSetLayoutCreateInfo{
         .binding_count = 1,
         .p_bindings = &.{
             vk.DescriptorSetLayoutBinding{
                 .binding = 0,
-                .descriptor_count = 1,
+                .descriptor_count = 1000,
                 .descriptor_type = .uniform_buffer,
                 .stage_flags = .{ .vertex_bit = true },
+            },
+        },
+        // DDI
+        .flags = .{ .update_after_bind_pool_bit = true },
+        .p_next = &vk.DescriptorSetLayoutBindingFlagsCreateInfo{
+            .binding_count = 1,
+            .p_binding_flags = &.{
+                vk.DescriptorBindingFlags{
+                    .update_after_bind_bit = true,
+                    .update_unused_while_pending_bit = true,
+                    .partially_bound_bit = true,
+                    .variable_descriptor_count_bit = true,
+                },
             },
         },
     }, null);
     defer ctx.dev.destroyDescriptorSetLayout(dlayout, null);
 
+    // Make Pool of descriptors with certain template(s) (ator)
+    const dpool = try ctx.dev.createDescriptorPool(&vk.DescriptorPoolCreateInfo{
+        .max_sets = 1,
+        .pool_size_count = 1,
+        .p_pool_sizes = &.{
+            // For DDI, min-spec is 500k
+            vk.DescriptorPoolSize{ .descriptor_count = 10000, .type = .uniform_buffer },
+        },
+        // DDI
+        .flags = .{ .update_after_bind_bit = true },
+    }, null);
+    defer ctx.dev.destroyDescriptorPool(dpool, null);
+
     // Allocate descriptor set
-    var dsets: [MAX_FIF]vk.DescriptorSet = undefined;
+    var dsets: [1]vk.DescriptorSet = undefined;
     _ = try ctx.dev.allocateDescriptorSets(&vk.DescriptorSetAllocateInfo{
         .descriptor_pool = dpool,
-        .descriptor_set_count = MAX_FIF,
-        .p_set_layouts = &.{ dlayout, dlayout },
+        .descriptor_set_count = 1,
+        .p_set_layouts = &.{dlayout},
+        .p_next = &vk.DescriptorSetVariableDescriptorCountAllocateInfo{
+            .descriptor_set_count = 1,
+            .p_descriptor_counts = &.{1000},
+        },
     }, &dsets);
 
     // Write to set
-    for (dsets, 0..) |dset, frame| {
+    for (0..MAX_FIF) |frame| {
         const binfo = vk.DescriptorBufferInfo{
             .buffer = pf_stack.buf.hdl,
             .offset = pf_stack.getOffset(@intCast(frame)),
             .range = pf_stack.getBlockSize(),
         };
         const write = vk.WriteDescriptorSet{
-            .dst_set = dset,
+            .dst_set = dsets[0],
             .dst_binding = 0,
-            .dst_array_element = 0,
+            .dst_array_element = @intCast(frame),
             .p_image_info = &.{vk.DescriptorImageInfo{
                 .image_layout = .undefined,
                 .image_view = .null_handle,
@@ -212,13 +250,14 @@ pub fn main() !void {
         ctx.dev.updateDescriptorSets(1, &.{write}, 0, null);
     }
 
-    // ======================== SETUP UBO
-
+    // NOTE: If you want to use Set = 0,1,2,3, they need to exist in order as below
     const p_layout = try ctx.dev.createPipelineLayout(&vk.PipelineLayoutCreateInfo{
-        .set_layout_count = 1,
-        .p_set_layouts = &.{dlayout},
+        .set_layout_count = 2,
+        .p_set_layouts = &.{ dlayout, dlayout },
     }, null);
     defer ctx.dev.destroyPipelineLayout(p_layout, null);
+
+    // ======================== SETUP UBO
 
     const target_details = vk.PipelineRenderingCreateInfoKHR{
         .color_attachment_count = 1,
@@ -473,7 +512,7 @@ pub fn main() !void {
             .p_color_attachments = &.{color_att},
             .view_mask = 0,
         };
-        cmdb.bindDescriptorSets(.graphics, p_layout, 0, 1, &.{dsets[curr_f]}, 0, null);
+        cmdb.bindDescriptorSets(.graphics, p_layout, 0, 1, &.{dsets[0]}, 0, null);
 
         cmdb.beginRenderingKHR(&rinfo);
         cmdb.bindPipeline(.graphics, pipes[0]);
