@@ -196,6 +196,81 @@ pub fn destroyBuffer(self: *Self, buffer: vkt.Buffer) void {
     self.dev.destroyBuffer(buffer.hdl, null);
 }
 
+pub fn createDescPool(
+    self: *Self,
+    maybe_varena: ?*Arena,
+    max_sets: u32,
+    pool_descs: []const vk.DescriptorPoolSize,
+    flags: vk.DescriptorPoolCreateFlags,
+) !vkt.DescriptorPool {
+    const hdl = try self.dev.createDescriptorPool(&vk.DescriptorPoolCreateInfo{
+        .max_sets = max_sets,
+        .pool_size_count = @intCast(pool_descs.len),
+        .p_pool_sizes = pool_descs.ptr,
+        .flags = flags,
+    }, null);
+
+    const dpool: vkt.DescriptorPool = .{ .dev = self.dev, .hdl = hdl };
+
+    if (maybe_varena) |varena| {
+        try varena.add(@TypeOf(dpool), Self.destroyDescPool, dpool);
+    }
+
+    return dpool;
+}
+
+pub fn destroyDescPool(self: *Self, pool: vkt.DescriptorPool) void {
+    self.dev.destroyDescriptorPool(pool.hdl, null);
+}
+
+pub fn createDescSetLayout(
+    self: *Self,
+    ator: Allocator,
+    maybe_varena: ?*Arena,
+    layout_info: vkt.DescriptorSetLayoutInfo,
+) !vk.DescriptorSetLayout {
+    // Per binding flags are all or nothing for simplicity (they map contiguously to bindings.. no gaps!)
+    const flag_on = layout_info.bindings[0].flags != null;
+    for (layout_info.bindings) |binding| {
+        // Not all bindings have been provided flags. Either provide for all, or for none
+        if (flag_on) {
+            std.debug.assert(binding.flags != null);
+        } else {
+            std.debug.assert(binding.flags == null);
+        }
+    }
+
+    // Unpack bindings and per-binding flags
+    var bindings = try ator.alloc(vk.DescriptorSetLayoutBinding, layout_info.bindings.len);
+    var binding_flags = try ator.alloc(vk.DescriptorBindingFlags, layout_info.bindings.len);
+    for (layout_info.bindings, 0..) |binding, i| {
+        bindings[i] = binding.binding;
+        binding_flags[i] = binding.flags orelse .{};
+    }
+
+    const ddi_ci = vk.DescriptorSetLayoutBindingFlagsCreateInfo{
+        .binding_count = @intCast(binding_flags.len),
+        .p_binding_flags = binding_flags.ptr,
+    };
+
+    const dlayout = try self.dev.createDescriptorSetLayout(&vk.DescriptorSetLayoutCreateInfo{
+        .binding_count = @intCast(bindings.len),
+        .p_bindings = bindings.ptr,
+        .flags = layout_info.flags,
+        .p_next = &ddi_ci,
+    }, null);
+
+    if (maybe_varena) |varena| {
+        try varena.add(@TypeOf(dlayout), Self.destroyDescSetLayout, dlayout);
+    }
+
+    return dlayout;
+}
+
+pub fn destroyDescSetLayout(self: *Self, layout: vk.DescriptorSetLayout) void {
+    self.dev.destroyDescriptorSetLayout(layout, null);
+}
+
 fn getPhysicalDevice(self: *Self, ator: Allocator) !void {
     const pds = try vkb.inst.enumeratePhysicalDevicesAlloc(ator);
     for (pds) |pd| {

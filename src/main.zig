@@ -123,12 +123,14 @@ pub fn main() !void {
     //  x Stack allocator for per frame data
     //  x FIF
     //
-    //  - Run shader with time based colors
+    //  x Run shader with time based colors
     //      x Naive
     //          x PipelineLayout
     //          x Descriptor Pool
     //          x Update descriptor set
-    //      - Descriptor indexing
+    //      x Descriptor indexing
+    //
+    //  x Refactor descriptor allocation API
     //
     //  - Swapchain recreation on resize
     //      - Naive deviceWait preferred
@@ -174,90 +176,75 @@ pub fn main() !void {
         b: f32,
     };
 
-    // Make descriptor memory template (specific combo)
-    const dlayout = try ctx.dev.createDescriptorSetLayout(&vk.DescriptorSetLayoutCreateInfo{
-        .binding_count = 1,
-        .p_bindings = &.{
-            vk.DescriptorSetLayoutBinding{
-                .binding = 0,
-                .descriptor_count = 1000,
-                .descriptor_type = .uniform_buffer,
-                .stage_flags = .{ .vertex_bit = true },
-            },
-        },
-        // DDI
-        .flags = .{ .update_after_bind_pool_bit = true },
-        .p_next = &vk.DescriptorSetLayoutBindingFlagsCreateInfo{
-            .binding_count = 1,
-            .p_binding_flags = &.{
-                vk.DescriptorBindingFlags{
+    //
+    // Make a Pool Creator:
+    //  - Pool for bindless specifically
+    //      - Used for Per-Material data!
+    //      - Will be texture set + SSBO likely
+    //
+    //  - Pool for normal usage
+    //      - Global data (static)          --> One UBO
+    //      - Per Frame data (dynamic)      --> One UBO
+    //      - Per Pass data (dynamic)       -->
+    //
+    //
+
+    // Make descriptor set layout
+    const dlayout = try ctx.createDescSetLayout(arena.ator(), varena, .{
+        .bindings = &[_]vkt.DescriptorSetLayoutBinding{
+            .{
+                .binding = .{
+                    .binding = 0,
+                    .descriptor_count = 1000,
+                    .descriptor_type = .uniform_buffer,
+                    .stage_flags = .{ .vertex_bit = true },
+                },
+                .flags = .{
                     .update_after_bind_bit = true,
                     .update_unused_while_pending_bit = true,
+                    // Allows shaders to access array elements that may not be explicitly populated with resources.
                     .partially_bound_bit = true,
                     .variable_descriptor_count_bit = true,
                 },
             },
         },
-    }, null);
-    defer ctx.dev.destroyDescriptorSetLayout(dlayout, null);
+        .flags = .{ .update_after_bind_pool_bit = true }, // DDI
+    });
 
-    // Make Pool of descriptors with certain template(s) (ator)
-    const dpool = try ctx.dev.createDescriptorPool(&vk.DescriptorPoolCreateInfo{
-        .max_sets = 1,
-        .pool_size_count = 1,
-        .p_pool_sizes = &.{
-            // For DDI, min-spec is 500k
-            vk.DescriptorPoolSize{ .descriptor_count = 10000, .type = .uniform_buffer },
-        },
-        // DDI
-        .flags = .{ .update_after_bind_bit = true },
-    }, null);
-    defer ctx.dev.destroyDescriptorPool(dpool, null);
-
-    // Allocate descriptor set
-    var dsets: [1]vk.DescriptorSet = undefined;
-    _ = try ctx.dev.allocateDescriptorSets(&vk.DescriptorSetAllocateInfo{
-        .descriptor_pool = dpool,
-        .descriptor_set_count = 1,
-        .p_set_layouts = &.{dlayout},
-        .p_next = &vk.DescriptorSetVariableDescriptorCountAllocateInfo{
-            .descriptor_set_count = 1,
-            .p_descriptor_counts = &.{1000},
-        },
-    }, &dsets);
-
-    // Write to set
+    // Make pool, allocate, write to descriptor
+    var dpool = try ctx.createDescPool(varena, 1, &[_]vk.DescriptorPoolSize{.{
+        .descriptor_count = 10_000,
+        .type = .uniform_buffer,
+    }}, .{ .update_after_bind_bit = true }); // DDI
+    var dset = try dpool.alloc(.{
+        .layout = dlayout,
+        .variable_descriptors = 1000, // DDI
+    });
     for (0..MAX_FIF) |frame| {
-        const binfo = vk.DescriptorBufferInfo{
-            .buffer = pf_stack.buf.hdl,
-            .offset = pf_stack.getOffset(@intCast(frame)),
-            .range = pf_stack.getBlockSize(),
-        };
-        const write = vk.WriteDescriptorSet{
-            .dst_set = dsets[0],
+        dset.writeBuffer(.{
+            .buf = pf_stack.buf,
+            .buf_offset = pf_stack.getOffset(@intCast(frame)),
+            .buf_range = pf_stack.getBlockSize(),
             .dst_binding = 0,
-            .dst_array_element = @intCast(frame),
-            .p_image_info = &.{vk.DescriptorImageInfo{
-                .image_layout = .undefined,
-                .image_view = .null_handle,
-                .sampler = .null_handle,
-            }},
-            .p_texel_buffer_view = &.{.null_handle},
-            .descriptor_count = 1,
-            .descriptor_type = .uniform_buffer,
-            .p_buffer_info = &.{binfo},
-        };
-        ctx.dev.updateDescriptorSets(1, &.{write}, 0, null);
+            .dst_type = .uniform_buffer,
+            .dst_array_el = @intCast(frame),
+        });
     }
 
     // NOTE: If you want to use Set = 0,1,2,3, they need to exist in order as below
     const p_layout = try ctx.dev.createPipelineLayout(&vk.PipelineLayoutCreateInfo{
         .set_layout_count = 2,
         .p_set_layouts = &.{ dlayout, dlayout },
+        .push_constant_range_count = 1,
+        .p_push_constant_ranges = &.{vk.PushConstantRange{
+            .stage_flags = .{ .vertex_bit = true },
+            .offset = 0,
+            .size = @sizeOf(u32),
+        }},
     }, null);
     defer ctx.dev.destroyPipelineLayout(p_layout, null);
 
-    // ======================== SETUP UBO
+    // ======================== SETUP DDI end
 
     const target_details = vk.PipelineRenderingCreateInfoKHR{
         .color_attachment_count = 1,
@@ -477,6 +464,9 @@ pub fn main() !void {
         dyn.r = @cos(elapsed + dt * 8) * 0.5 + 0.5;
         dyn.g = @sin(elapsed + dt * 2) * 0.5 + 0.5;
         dyn.b = @sin(elapsed + dt * 3) * 0.5 + 0.5;
+        // dyn.r = @floatFromInt(curr_f);
+        // dyn.g = @floatFromInt(curr_f);
+        // dyn.b = @floatFromInt(curr_f);
 
         try cmdp.reset(.{});
         var cmdb = try cmdp.alloc(.primary, 1);
@@ -512,12 +502,13 @@ pub fn main() !void {
             .p_color_attachments = &.{color_att},
             .view_mask = 0,
         };
-        cmdb.bindDescriptorSets(.graphics, p_layout, 0, 1, &.{dsets[0]}, 0, null);
+        cmdb.bindDescriptorSets(.graphics, p_layout, 0, 1, &.{dset.hdl}, 0, null);
 
         cmdb.beginRenderingKHR(&rinfo);
         cmdb.bindPipeline(.graphics, pipes[0]);
         cmdb.bindVertexBuffers(0, 1, &.{vb.hdl}, &.{0});
         cmdb.bindIndexBuffer(ib.hdl, 0, .uint32);
+        cmdb.pushConstants(p_layout, .{ .vertex_bit = true }, 0, @sizeOf(u32), &curr_f);
         cmdb.drawIndexed(3, 1, 0, 0, 0);
         cmdb.endRenderingKHR();
 

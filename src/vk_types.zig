@@ -26,6 +26,84 @@ pub const MemoryType = enum {
     gpu_to_cpu,
 };
 
+pub const DescriptorSet = struct {
+    const Self = @This();
+
+    dev: Device,
+    hdl: vk.DescriptorSet,
+
+    const BufferWrite = struct {
+        buf: Buffer,
+        buf_offset: u32,
+        buf_range: u32,
+
+        dst_binding: u32,
+        dst_array_el: u32,
+        dst_type: vk.DescriptorType,
+    };
+
+    pub fn writeBuffer(self: *Self, write: BufferWrite) void {
+        const binfo = vk.DescriptorBufferInfo{
+            .buffer = write.buf.hdl,
+            .offset = write.buf_offset,
+            .range = write.buf_range,
+        };
+
+        self.dev.updateDescriptorSets(1, &.{vk.WriteDescriptorSet{
+            .dst_set = self.hdl,
+            .dst_binding = 0,
+            .dst_array_element = write.dst_array_el,
+            .p_image_info = &.{vk.DescriptorImageInfo{
+                .image_layout = .undefined,
+                .image_view = .null_handle,
+                .sampler = .null_handle,
+            }},
+            .p_texel_buffer_view = &.{.null_handle},
+            .descriptor_count = 1,
+            .descriptor_type = write.dst_type,
+            .p_buffer_info = &.{binfo},
+        }}, 0, null);
+    }
+    pub fn writeImage() void {}
+};
+
+pub const DescriptorPool = struct {
+    const Self = @This();
+
+    pub const AllocInfo = struct {
+        layout: vk.DescriptorSetLayout,
+
+        // Maximum descriptors allowed for this binding
+        // For descriptor indexing
+        variable_descriptors: ?u32,
+    };
+
+    dev: Device,
+    hdl: vk.DescriptorPool,
+
+    // Allocate single
+    pub fn alloc(self: *Self, allocInfo: AllocInfo) !DescriptorSet {
+        var dset: DescriptorSet = undefined;
+        _ = try self.dev.allocateDescriptorSets(&vk.DescriptorSetAllocateInfo{
+            .descriptor_pool = self.hdl,
+            .descriptor_set_count = 1,
+            .p_set_layouts = &.{allocInfo.layout},
+            .p_next = if (allocInfo.variable_descriptors != null) &vk.DescriptorSetVariableDescriptorCountAllocateInfo{
+                .descriptor_set_count = 1,
+                .p_descriptor_counts = &.{allocInfo.variable_descriptors.?}, // will fail if dlayout has descriptor count < this one
+            } else null,
+        }, @ptrCast(&dset.hdl));
+
+        dset.dev = self.dev;
+
+        return dset;
+    }
+
+    pub fn reset(self: *Self) void {
+        self.dev.resetDescriptorPool(self.hdl, .{});
+    }
+};
+
 pub const CommandPool = struct {
     const Self = @This();
 
@@ -71,6 +149,18 @@ pub const Swapchain = struct {
     pub fn getFormat(self: *Self) vk.Format {
         return self.native.format.format;
     }
+};
+
+pub const DescriptorSetLayoutInfo = struct {
+    bindings: []const DescriptorSetLayoutBinding,
+    flags: vk.DescriptorSetLayoutCreateFlags,
+};
+
+pub const DescriptorSetLayoutBinding = struct {
+    binding: vk.DescriptorSetLayoutBinding,
+
+    // DDI (pNext)
+    flags: ?vk.DescriptorBindingFlags,
 };
 
 pub const Utils = struct {
