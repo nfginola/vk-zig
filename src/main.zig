@@ -74,8 +74,14 @@ pub fn main() !void {
     };
     {
         // Grab buffer memory
-        const vmem = try ctx.allocateMemory(varena, .gpu, 64_000);
-        const imem = try ctx.allocateMemory(varena, .gpu, 64_000);
+        const vmem = try ctx.allocateMemory(varena, .{
+            .type = .gpu,
+            .size = 64_000,
+        });
+        const imem = try ctx.allocateMemory(varena, .{
+            .type = .gpu,
+            .size = 64_000,
+        });
         _ = try ctx.dev.bindBufferMemory(vb.hdl, vmem, 0);
         _ = try ctx.dev.bindBufferMemory(ib.hdl, imem, 0);
 
@@ -183,16 +189,22 @@ pub fn main() !void {
     //      - Will be texture set + SSBO likely
     //
     //  - Pool for normal usage
-    //      - Global data (static)          --> One UBO
-    //      - Per Frame data (dynamic)      --> One UBO
+    //      - Global data (static)          --> One UBO?
+    //      - Per Frame data (dynamic)      --> One UBO?
     //      - Per Pass data (dynamic)       -->
     //
+    //  Use #include support to have easy-access CPU/GPU mapping
+    //  between global and per frame sets, which should stay
+    //  consistent no matter the consumer
+    //
+    //  With the extra set number 4, we could leave it for any Per-Pass-Interframe data
+    //  (temporal buffers and the likes)
     //
 
     // Make descriptor set layout
     const dlayout = try ctx.createDescSetLayout(arena.ator(), varena, .{
         .bindings = &[_]vkt.DescriptorSetLayoutBinding{
-            .{
+            vkt.DescriptorSetLayoutBinding{
                 .binding = .{
                     .binding = 0,
                     .descriptor_count = 1000,
@@ -212,10 +224,12 @@ pub fn main() !void {
     });
 
     // Make pool, allocate, write to descriptor
-    var dpool = try ctx.createDescPool(varena, 1, &[_]vk.DescriptorPoolSize{.{
-        .descriptor_count = 10_000,
-        .type = .uniform_buffer,
-    }}, .{ .update_after_bind_bit = true }); // DDI
+    var dpool = try ctx.createDescPool(varena, 1, &[_]vk.DescriptorPoolSize{
+        .{
+            .descriptor_count = 10_000,
+            .type = .uniform_buffer,
+        },
+    }, .{ .update_after_bind_bit = true }); // DDI
     var dset = try dpool.alloc(.{
         .layout = dlayout,
         .variable_descriptors = 1000, // DDI
@@ -226,15 +240,14 @@ pub fn main() !void {
             .buf_offset = pf_stack.getOffset(@intCast(frame)),
             .buf_range = pf_stack.getBlockSize(),
             .dst_binding = 0,
-            .dst_type = .uniform_buffer,
             .dst_array_el = @intCast(frame),
+            .dst_type = .uniform_buffer,
         });
     }
 
-    // NOTE: If you want to use Set = 0,1,2,3, they need to exist in order as below
     const p_layout = try ctx.dev.createPipelineLayout(&vk.PipelineLayoutCreateInfo{
         .set_layout_count = 2,
-        .p_set_layouts = &.{ dlayout, dlayout },
+        .p_set_layouts = &.{ dlayout, dlayout }, // TODO: Set order --> Global, Per Frame, Per Pass, <Flexible 4th slot>
         .push_constant_range_count = 1,
         .p_push_constant_ranges = &.{vk.PushConstantRange{
             .stage_flags = .{ .vertex_bit = true },
@@ -419,6 +432,19 @@ pub fn main() !void {
     const init_disp_interval = 0.01;
     var display_dt_interval: f32 = init_disp_interval; // in s
     var elapsed: f32 = 0.0; // in s
+
+    // ======== Create buffer using buffer device address
+    var bd = try ctx.createBuffer(varena, 32_000, .{ .shader_device_address_bit = true, .storage_buffer_bit = true });
+    const bd_mem = try ctx.allocateMemory(varena, .{
+        .type = .cpu_to_gpu,
+        .size = 64_000,
+        .device_adr = true,
+    });
+    _ = try ctx.dev.bindBufferMemory(bd.hdl, bd_mem, 0);
+    const adr_inf: vk.BufferDeviceAddressInfo = .{
+        .buffer = bd.hdl,
+    };
+    bd.gpu_adr = ctx.dev.getBufferDeviceAddress(&adr_inf);
 
     while (!window.shouldClose()) {
         defer first_frame = false;

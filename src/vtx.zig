@@ -84,10 +84,18 @@ pub fn getQueue(self: *Self, qtype: vkt.QueueType) vkt.Queue {
 pub fn createShaderModuleFromFile(self: *Self, ator: Allocator, maybe_varena: ?*Arena, fpath: []const u8) !vk.ShaderModule {
     const file = try std.fs.cwd().openFile(fpath, .{});
     defer file.close();
-    return try self.createShaderModule(maybe_varena orelse null, try file.reader().readAllAlloc(ator, std.math.maxInt(usize)));
+
+    // We must guarantee that the final binary is 4-byte aligned, that is
+    // the requirement for the binary passed to create shader module
+    const binary = try file.reader().readAllAlloc(ator, std.math.maxInt(usize));
+    const bin_aligned = try ator.alignedAlloc(u8, @sizeOf(u32), binary.len);
+    @memcpy(bin_aligned, binary);
+
+    return try self.createShaderModule(maybe_varena orelse null, bin_aligned);
 }
 
 pub fn createShaderModule(self: *Self, maybe_varena: ?*Arena, binary: []u8) !vk.ShaderModule {
+    std.debug.assert(@intFromPtr(binary.ptr) % 4 == 0);
     const mod = try self.dev.createShaderModule(&.{
         .code_size = binary.len,
         .p_code = @ptrCast(@alignCast(binary.ptr)),
@@ -161,10 +169,16 @@ pub fn destroySemaphore(self: *Self, hdl: vk.Semaphore) void {
     self.dev.destroySemaphore(hdl, null);
 }
 
-pub fn allocateMemory(self: *Self, maybe_varena: ?*Arena, mem_type: vkt.MemoryType, size: u64) !vk.DeviceMemory {
+pub fn allocateMemory(self: *Self, maybe_varena: ?*Arena, inf: vkt.MemoryAllocateInfo) !vk.DeviceMemory {
+    const alloc_flags = vk.MemoryAllocateFlagsInfo{
+        .flags = .{ .device_address_bit = true },
+        .device_mask = 0, // unused
+    };
+
     const mem = try self.dev.allocateMemory(&vk.MemoryAllocateInfo{
-        .allocation_size = size,
-        .memory_type_index = self.memory_heaps[@intFromEnum(mem_type)],
+        .allocation_size = inf.size,
+        .memory_type_index = self.memory_heaps[@intFromEnum(inf.type)],
+        .p_next = if (inf.device_adr) &alloc_flags else null,
     }, null);
 
     if (maybe_varena) |varena| {
@@ -399,7 +413,14 @@ fn createDevice(self: *Self, ator: Allocator) !void {
     // Assume pNext is matched with all possible available sType (for this query)
     // and that it recursively checks any following pNext inside that structure (linked list of pNext)
     var ddi_feats: vk.PhysicalDeviceDescriptorIndexingFeatures = .{};
+
+    // Buffer device address
+    var bda_feats: vk.PhysicalDeviceBufferDeviceAddressFeatures = .{};
+    bda_feats.buffer_device_address = vk.TRUE;
+    ddi_feats.p_next = &bda_feats; // Chain pNext
+
     var feats: vk.PhysicalDeviceFeatures2 = .{ .p_next = &ddi_feats, .features = undefined };
+
     // Turn on/off features available in the physical device
     vkb.inst.getPhysicalDeviceFeatures2(self.pd, &feats);
 
@@ -415,7 +436,7 @@ fn createDevice(self: *Self, ator: Allocator) !void {
     const dev = try vkb.inst.createDevice(self.pd, &vk.DeviceCreateInfo{
         .queue_create_info_count = @intCast(q_cinfos.items.len),
         .p_queue_create_infos = @ptrCast(q_cinfos.items),
-        .enabled_extension_count = 4,
+        .enabled_extension_count = 5,
         .pp_enabled_extension_names = &.{
             vk.extensions.khr_swapchain.name,
             vk.extensions.khr_dynamic_rendering.name,
@@ -423,6 +444,7 @@ fn createDevice(self: *Self, ator: Allocator) !void {
             // Works around a validation layer bug with descriptor pool allocation with VARIABLE_COUNT.
             // See: https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/2350.
             vk.extensions.khr_maintenance_1.name,
+            vk.extensions.ext_buffer_device_address.name,
         },
         .p_enabled_features = &feats.features,
         // Enable dynamic rendering

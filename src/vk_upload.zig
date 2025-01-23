@@ -251,7 +251,10 @@ pub fn create(ator: Allocator, total_size: u32, vtx: *nvk) !*Self {
 
     self.target_fence = try self.vtx.createFence(self.varena, .{ .signaled_bit = true });
 
-    self.vk_mem = try vtx.allocateMemory(self.varena, .cpu_to_gpu, total_size);
+    self.vk_mem = try vtx.allocateMemory(self.varena, .{
+        .type = .cpu_to_gpu,
+        .size = total_size,
+    });
     self.vk_buf = try vtx.createBuffer(self.varena, total_size, .{ .transfer_src_bit = true });
     try vtx.dev.bindBufferMemory(self.vk_buf.hdl, self.vk_mem, 0);
     if (try vtx.dev.mapMemory(self.vk_mem, 0, total_size, .{})) |p| {

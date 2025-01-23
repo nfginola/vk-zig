@@ -7,7 +7,10 @@ pub const Device = vkb.Device;
 pub const CommandBuffer = vkb.CommandBuffer;
 
 pub const Queue = struct { api: vkb.Queue = undefined, fam: ?u32 = null, id: u32 = 0 };
-pub const Buffer = struct { hdl: vk.Buffer };
+pub const Buffer = struct {
+    hdl: vk.Buffer,
+    gpu_adr: u64 = 0, // Used only for buffer device address
+};
 
 pub const QueueType = enum {
     graphics,
@@ -161,6 +164,12 @@ pub const DescriptorSetLayoutBinding = struct {
 
     // DDI (pNext)
     flags: ?vk.DescriptorBindingFlags,
+};
+
+pub const MemoryAllocateInfo = struct {
+    type: MemoryType,
+    size: u64,
+    device_adr: bool = false,
 };
 
 pub const Utils = struct {

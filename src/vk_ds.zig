@@ -29,7 +29,10 @@ pub const Stack = struct {
     pub fn init(varena: *nvk.Arena, ctx: *nvk, opts: InitOptions) !Self {
         const total_size = opts.rr_block_size * opts.rr_blocks;
 
-        const mem = try ctx.allocateMemory(varena, .cpu_to_gpu, total_size);
+        const mem = try ctx.allocateMemory(varena, .{
+            .type = .cpu_to_gpu,
+            .size = total_size,
+        });
         const buf = try ctx.createBuffer(varena, total_size, .{ .uniform_buffer_bit = true });
         try ctx.dev.bindBufferMemory(buf.hdl, mem, 0);
         var memory: []u8 = undefined;
