@@ -55,15 +55,13 @@ pub fn main() !void {
     const gq = ctx.getQueue(.graphics);
     defer ctx.deinit();
 
-    var upload = try utx.create(arena.ator(), 64_000, ctx);
+    var upload = try utx.create(arena.ator(), ctx, 64_000);
     defer upload.deinit();
 
     // Top level VK resources lifetime arena
     var varena = try ctx.createArena(arena.ator());
     defer varena.deinit();
 
-    const vb = try ctx.createBuffer(varena, 32_000, .{ .vertex_buffer_bit = true, .transfer_dst_bit = true });
-    const ib = try ctx.createBuffer(varena, 32_000, .{ .index_buffer_bit = true, .transfer_dst_bit = true });
     const Vertex = struct {
         x: f32,
         y: f32,
@@ -72,33 +70,27 @@ pub fn main() !void {
         v: f32,
         w: f32,
     };
-    {
-        // Grab buffer memory
-        const vmem = try ctx.allocateMemory(varena, .{
-            .type = .gpu,
-            .size = 64_000,
-        });
-        const imem = try ctx.allocateMemory(varena, .{
-            .type = .gpu,
-            .size = 64_000,
-        });
-        _ = try ctx.dev.bindBufferMemory(vb.hdl, vmem, 0);
-        _ = try ctx.dev.bindBufferMemory(ib.hdl, imem, 0);
-
-        // Upload tri and indices
-        const vertices = [_]Vertex{
-            .{ .x = 0.0, .y = -0.5, .z = 0.0, .u = 1.0, .v = 0.0, .w = 0.0 },
-            .{ .x = -0.5, .y = 0.5, .z = 0.0, .u = 0.0, .v = 1.0, .w = 0.0 },
-            .{ .x = 0.5, .y = 0.5, .z = 0.0, .u = 0.0, .v = 0.0, .w = 1.0 },
-        };
-        const indices = [_]u32{ 0, 1, 2 };
-        // try upload.copy_to_buffer(ib, .{ .transfer_bit = true }, try upload.push(memh.byteSliceC(u32, indices[0..]), 0));
-        // try upload.submit(.compute, null);
-        try upload.copy_to_buffer(vb, .{ .vertex_shader_bit = true }, try upload.push(memh.byteSliceC(Vertex, vertices[0..]), 0));
-        try upload.copy_to_buffer(ib, .{ .vertex_shader_bit = true }, try upload.push(memh.byteSliceC(u32, indices[0..]), 0));
-        try upload.submit(.graphics, null);
-        try upload.host_wait();
-    }
+    const vb = try ctx.createBufferWithMemory(varena, .{
+        .size = 32_000,
+        .usage = .{ .vertex_buffer_bit = true, .transfer_dst_bit = true, .shader_device_address_bit = true },
+        .mem_type = .cpu_to_gpu,
+    });
+    const ib = try ctx.createBufferWithMemory(varena, .{
+        .size = 32_000,
+        .usage = .{ .index_buffer_bit = true, .transfer_dst_bit = true, .shader_device_address_bit = true },
+        .mem_type = .cpu_to_gpu,
+    });
+    // Upload tri and indices
+    const vertices = [_]Vertex{
+        .{ .x = 0.0, .y = -0.5, .z = 0.0, .u = 1.0, .v = 0.0, .w = 0.0 },
+        .{ .x = -0.5, .y = 0.5, .z = 0.0, .u = 0.0, .v = 1.0, .w = 0.0 },
+        .{ .x = 0.5, .y = 0.5, .z = 0.0, .u = 0.0, .v = 0.0, .w = 1.0 },
+    };
+    const indices = [_]u32{ 0, 1, 2 };
+    try upload.copy_to_buffer(vb, .{ .vertex_shader_bit = true }, try upload.push(memh.byteSliceC(Vertex, vertices[0..]), 0));
+    try upload.copy_to_buffer(ib, .{ .vertex_shader_bit = true }, try upload.push(memh.byteSliceC(u32, indices[0..]), 0));
+    try upload.submit(.graphics, null);
+    try upload.host_wait();
 
     // TODO:
     //  x Grab glslc
@@ -138,6 +130,13 @@ pub fn main() !void {
     //
     //  x Refactor descriptor allocation API
     //
+    //  x Support buffer device address
+    //  x Change upload context to use device address buffers
+    //  x Add helper for buffer/memory pair allocation
+    //
+    //  - Use vertex pulling instead of VB/IB bind
+    //      - Remove vertex input state declaration
+    //
     //  - Swapchain recreation on resize
     //      - Naive deviceWait preferred
     //      - Since this happens after vkWaitResetFences and we
@@ -153,8 +152,6 @@ pub fn main() !void {
     //        In other words, one getNext() and present(),
     //        ensure that SC is recreated inside before returning to
     //        normal ensuring normal PF stepping
-    //
-    //
     //
     //  - Make Gfx pipeline helpers
     //
@@ -173,7 +170,7 @@ pub fn main() !void {
     //  - Some simple ass render graph to avoid manual barriers
     //
 
-    var pf_stack = try vkds.Stack.init(varena, ctx, .{ .rr_block_size = 2048, .rr_blocks = MAX_FIF });
+    var pf_stack = try vkds.Stack.init(varena, ctx, .{ .rr_block_size = 2048, .rr_blocks = MAX_FIF, .device_adr = true });
 
     // ======================== SETUP UBO
     const TestUBO = struct {
@@ -245,6 +242,16 @@ pub fn main() !void {
         });
     }
 
+    // Need packed to preserve memory ordering
+    // 8 byte alignment of u64 causes gap..
+    // sort by largest to smallest top-down to avoid having to pad
+    const PushConstant = packed struct {
+        adr: u64,
+        pf_adr: u64,
+        vb_adr: u64,
+        ib_adr: u64,
+    };
+
     const p_layout = try ctx.dev.createPipelineLayout(&vk.PipelineLayoutCreateInfo{
         .set_layout_count = 2,
         .p_set_layouts = &.{ dlayout, dlayout }, // TODO: Set order --> Global, Per Frame, Per Pass, <Flexible 4th slot>
@@ -252,7 +259,7 @@ pub fn main() !void {
         .p_push_constant_ranges = &.{vk.PushConstantRange{
             .stage_flags = .{ .vertex_bit = true },
             .offset = 0,
-            .size = @sizeOf(u32),
+            .size = @sizeOf(PushConstant),
         }},
     }, null);
     defer ctx.dev.destroyPipelineLayout(p_layout, null);
@@ -434,17 +441,15 @@ pub fn main() !void {
     var elapsed: f32 = 0.0; // in s
 
     // ======== Create buffer using buffer device address
-    var bd = try ctx.createBuffer(varena, 32_000, .{ .shader_device_address_bit = true, .storage_buffer_bit = true });
-    const bd_mem = try ctx.allocateMemory(varena, .{
-        .type = .cpu_to_gpu,
+    const bd = try ctx.createBufferWithMemory(varena, .{
         .size = 64_000,
-        .device_adr = true,
+        .mem_type = .cpu_to_gpu,
+        .usage = .{ .shader_device_address_bit = true, .storage_buffer_bit = true },
     });
-    _ = try ctx.dev.bindBufferMemory(bd.hdl, bd_mem, 0);
-    const adr_inf: vk.BufferDeviceAddressInfo = .{
-        .buffer = bd.hdl,
-    };
-    bd.gpu_adr = ctx.dev.getBufferDeviceAddress(&adr_inf);
+    const bd_map = try ctx.mapBuffer(f32, bd);
+    bd_map[0] = 0.2;
+    bd_map[1] = 0.8;
+    bd_map[2] = 0.5;
 
     while (!window.shouldClose()) {
         defer first_frame = false;
@@ -534,7 +539,13 @@ pub fn main() !void {
         cmdb.bindPipeline(.graphics, pipes[0]);
         cmdb.bindVertexBuffers(0, 1, &.{vb.hdl}, &.{0});
         cmdb.bindIndexBuffer(ib.hdl, 0, .uint32);
-        cmdb.pushConstants(p_layout, .{ .vertex_bit = true }, 0, @sizeOf(u32), &curr_f);
+        const pc: PushConstant = .{
+            .adr = bd.gpu_adr.?,
+            .pf_adr = pf_stack.buf.gpu_adr.? + pf_stack.getOffset(curr_f),
+            .vb_adr = vb.gpu_adr.?,
+            .ib_adr = ib.gpu_adr.?,
+        };
+        cmdb.pushConstants(p_layout, .{ .vertex_bit = true }, 0, @sizeOf(PushConstant), &pc);
         cmdb.drawIndexed(3, 1, 0, 0, 0);
         cmdb.endRenderingKHR();
 

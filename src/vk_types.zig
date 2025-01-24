@@ -9,7 +9,15 @@ pub const CommandBuffer = vkb.CommandBuffer;
 pub const Queue = struct { api: vkb.Queue = undefined, fam: ?u32 = null, id: u32 = 0 };
 pub const Buffer = struct {
     hdl: vk.Buffer,
-    gpu_adr: u64 = 0, // Used only for buffer device address
+    size: u64,
+
+    memory: ?DeviceMemory = null,
+    gpu_adr: ?u64 = 0, // Used only for buffer device address
+    mem_offset: ?u64 = 0,
+};
+pub const DeviceMemory = struct {
+    hdl: vk.DeviceMemory,
+    dev_addressable: bool,
 };
 
 pub const QueueType = enum {
@@ -170,6 +178,13 @@ pub const MemoryAllocateInfo = struct {
     type: MemoryType,
     size: u64,
     device_adr: bool = false,
+};
+
+// For shorthand buffer/memory pair creation
+pub const MemoryBufferInfo = struct {
+    size: u64,
+    usage: vk.BufferUsageFlags,
+    mem_type: MemoryType,
 };
 
 pub const Utils = struct {

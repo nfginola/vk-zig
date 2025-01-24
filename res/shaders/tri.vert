@@ -1,5 +1,6 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_buffer_reference : require
 
 out gl_PerVertex {
     vec4 gl_Position;
@@ -11,6 +12,27 @@ layout(set = 0, binding = 0) uniform UBO {
     vec3 rgb;
 // } ubos[1000];
 } ubos[];
+
+
+// Pointer alignment, buffer_ref_align
+layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer SomeData
+{
+    float floats[];
+};
+
+// Pointer alignment, buffer_ref_align
+layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer PositionData
+{
+    vec3 positions[];
+};
+
+
+// Pointer alignment, buffer_ref_align
+layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer PerFrame
+{
+    vec3 rgb;
+};
+
 
 // Push constant don't need 
 // nonuniformEXT qualifier as the value is 
@@ -24,7 +46,9 @@ layout(set = 0, binding = 0) uniform UBO {
 // 
 layout(push_constant) uniform constants
 {
-    uint frame_idx;
+    SomeData some_data;
+    PerFrame per_frame;
+    PositionData positions;
 } push_constants;
 
 layout(location = 0) in vec3 inPosition;
@@ -48,14 +72,6 @@ void main() {
     // gl_Position = vec4(positions[gl_VertexIndex], 1.0);
     // fragColor = colors[gl_VertexIndex];
     gl_Position = vec4(inPosition, 1.0);
-    // fragColor = vec3(1.0);
-    fragColor = inColor;
-    // vec3 b1 = ubos[0].rgb;      // f0 resource
-    // vec3 b2 = ubos[1].rgb;      // f1 resource
-    // vec3 b3 = ubos[99].rgb;     // no resource, zeroed
-    // vec3 col = b1 + b2 + b3;
-    // fragColor = col;
-    // fragColor = ubos[push_constants.frame_idx].rgb;
-    fragColor = ubos[push_constants.frame_idx].rgb;
+    fragColor = vec3(push_constants.per_frame.rgb);
 
 }

@@ -14,11 +14,11 @@ pub const Stack = struct {
     pub const InitOptions = struct {
         rr_blocks: u32 = 2,
         rr_block_size: u32 = 1_024 * 4,
+        device_adr: bool = true, // Use device address extension to access this buffer
     };
 
     opts: InitOptions,
     buf: vkt.Buffer,
-    mem: vk.DeviceMemory,
     varena: *nvk.Arena,
 
     memory: []u8,
@@ -29,21 +29,17 @@ pub const Stack = struct {
     pub fn init(varena: *nvk.Arena, ctx: *nvk, opts: InitOptions) !Self {
         const total_size = opts.rr_block_size * opts.rr_blocks;
 
-        const mem = try ctx.allocateMemory(varena, .{
-            .type = .cpu_to_gpu,
+        // If using device address, doesn't matter whether we use uniform/storage buffer bit
+        const buf = try ctx.createBufferWithMemory(varena, .{
+            .usage = .{ .shader_device_address_bit = opts.device_adr, .uniform_buffer_bit = true },
             .size = total_size,
+            .mem_type = .cpu_to_gpu,
         });
-        const buf = try ctx.createBuffer(varena, total_size, .{ .uniform_buffer_bit = true });
-        try ctx.dev.bindBufferMemory(buf.hdl, mem, 0);
-        var memory: []u8 = undefined;
-        if (try ctx.dev.mapMemory(mem, 0, total_size, .{})) |p| {
-            memory = @as([*]u8, @ptrCast(p))[0..total_size];
-        }
+        const memory = try ctx.mapBuffer(u8, buf);
 
         return .{
             .opts = opts,
             .buf = buf,
-            .mem = mem,
             .varena = varena,
             .memory = memory,
         };

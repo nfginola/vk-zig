@@ -27,7 +27,6 @@ arena: memh.Arena = undefined,
 varena: *nvk.Arena = undefined,
 
 vtx: *nvk = undefined,
-vk_mem: vk.DeviceMemory = undefined,
 vk_buf: vkt.Buffer = undefined,
 
 fence_on: bool = true,
@@ -235,7 +234,7 @@ pub fn host_wait(self: *Self) !void {
     }
 }
 
-pub fn create(ator: Allocator, total_size: u32, vtx: *nvk) !*Self {
+pub fn create(ator: Allocator, vtx: *nvk, total_size: u32) !*Self {
     const self = try ator.create(Self);
     self.* = .{};
     self.arena = memh.Arena.init(ator);
@@ -251,15 +250,12 @@ pub fn create(ator: Allocator, total_size: u32, vtx: *nvk) !*Self {
 
     self.target_fence = try self.vtx.createFence(self.varena, .{ .signaled_bit = true });
 
-    self.vk_mem = try vtx.allocateMemory(self.varena, .{
-        .type = .cpu_to_gpu,
+    self.vk_buf = try vtx.createBufferWithMemory(self.varena, .{
         .size = total_size,
+        .usage = .{ .transfer_src_bit = true },
+        .mem_type = .cpu_to_gpu,
     });
-    self.vk_buf = try vtx.createBuffer(self.varena, total_size, .{ .transfer_src_bit = true });
-    try vtx.dev.bindBufferMemory(self.vk_buf.hdl, self.vk_mem, 0);
-    if (try vtx.dev.mapMemory(self.vk_mem, 0, total_size, .{})) |p| {
-        self.memory = @as([*]u8, @ptrCast(p))[0..total_size];
-    }
+    self.memory = try vtx.mapBuffer(u8, self.vk_buf);
 
     return self;
 }

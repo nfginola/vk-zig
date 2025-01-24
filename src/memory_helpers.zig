@@ -125,3 +125,13 @@ pub fn CallbackArena(comptime T1: type) type {
     };
 }
 // ================= Callback Arena End =================
+
+/// Print memory properties of a struct for debugging
+pub fn printMemoryProperties(comptime T: type) void {
+    inline for (std.meta.fields(T)) |field| {
+        const offset = @offsetOf(T, field.name);
+        const field_type = field.type;
+        const field_size = @sizeOf(field_type);
+        std.debug.print("Field '{s}': offset = {d}, size = {d}\n", .{ field.name, offset, field_size });
+    }
+}

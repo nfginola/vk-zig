@@ -88,14 +88,14 @@ pub fn createShaderModuleFromFile(self: *Self, ator: Allocator, maybe_varena: ?*
     // We must guarantee that the final binary is 4-byte aligned, that is
     // the requirement for the binary passed to create shader module
     const binary = try file.reader().readAllAlloc(ator, std.math.maxInt(usize));
-    const bin_aligned = try ator.alignedAlloc(u8, @sizeOf(u32), binary.len);
+    const bin_aligned = try ator.alignedAlloc(u8, @alignOf(u32), binary.len);
     @memcpy(bin_aligned, binary);
 
     return try self.createShaderModule(maybe_varena orelse null, bin_aligned);
 }
 
 pub fn createShaderModule(self: *Self, maybe_varena: ?*Arena, binary: []u8) !vk.ShaderModule {
-    std.debug.assert(@intFromPtr(binary.ptr) % 4 == 0);
+    std.debug.assert(@intFromPtr(binary.ptr) % @sizeOf(u32) == 0);
     const mod = try self.dev.createShaderModule(&.{
         .code_size = binary.len,
         .p_code = @ptrCast(@alignCast(binary.ptr)),
@@ -169,17 +169,20 @@ pub fn destroySemaphore(self: *Self, hdl: vk.Semaphore) void {
     self.dev.destroySemaphore(hdl, null);
 }
 
-pub fn allocateMemory(self: *Self, maybe_varena: ?*Arena, inf: vkt.MemoryAllocateInfo) !vk.DeviceMemory {
+pub fn allocateMemory(self: *Self, maybe_varena: ?*Arena, inf: vkt.MemoryAllocateInfo) !vkt.DeviceMemory {
     const alloc_flags = vk.MemoryAllocateFlagsInfo{
         .flags = .{ .device_address_bit = true },
         .device_mask = 0, // unused
     };
 
-    const mem = try self.dev.allocateMemory(&vk.MemoryAllocateInfo{
-        .allocation_size = inf.size,
-        .memory_type_index = self.memory_heaps[@intFromEnum(inf.type)],
-        .p_next = if (inf.device_adr) &alloc_flags else null,
-    }, null);
+    const mem = vkt.DeviceMemory{
+        .hdl = try self.dev.allocateMemory(&vk.MemoryAllocateInfo{
+            .allocation_size = inf.size,
+            .memory_type_index = self.memory_heaps[@intFromEnum(inf.type)],
+            .p_next = if (inf.device_adr) &alloc_flags else null,
+        }, null),
+        .dev_addressable = inf.device_adr,
+    };
 
     if (maybe_varena) |varena| {
         try varena.add(@TypeOf(mem), Self.freeMemory, mem);
@@ -188,16 +191,19 @@ pub fn allocateMemory(self: *Self, maybe_varena: ?*Arena, inf: vkt.MemoryAllocat
     return mem;
 }
 
-pub fn freeMemory(self: *Self, mem: vk.DeviceMemory) void {
-    self.dev.freeMemory(mem, null);
+pub fn freeMemory(self: *Self, mem: vkt.DeviceMemory) void {
+    self.dev.freeMemory(mem.hdl, null);
 }
 
 pub fn createBuffer(self: *Self, maybe_varena: ?*Arena, size: u64, usage: vk.BufferUsageFlags) !vkt.Buffer {
-    const buf = vkt.Buffer{ .hdl = try self.dev.createBuffer(&vk.BufferCreateInfo{
-        .sharing_mode = .exclusive,
+    const buf = vkt.Buffer{
+        .hdl = try self.dev.createBuffer(&vk.BufferCreateInfo{
+            .sharing_mode = .exclusive,
+            .size = size,
+            .usage = usage,
+        }, null),
         .size = size,
-        .usage = usage,
-    }, null) };
+    };
 
     if (maybe_varena) |varena| {
         try varena.add(@TypeOf(buf), Self.destroyBuffer, buf);
@@ -208,6 +214,43 @@ pub fn createBuffer(self: *Self, maybe_varena: ?*Arena, size: u64, usage: vk.Buf
 
 pub fn destroyBuffer(self: *Self, buffer: vkt.Buffer) void {
     self.dev.destroyBuffer(buffer.hdl, null);
+}
+
+/// Shorthand for paired buffer/memory
+pub fn createBufferWithMemory(
+    self: *Self,
+    maybe_varena: ?*Arena,
+    inf: vkt.MemoryBufferInfo,
+) !vkt.Buffer {
+    var buf = try self.createBuffer(maybe_varena, inf.size, inf.usage);
+    const mem = try self.allocateMemory(maybe_varena, .{
+        .size = inf.size,
+        .device_adr = if (inf.usage.shader_device_address_bit == true) true else false,
+        .type = inf.mem_type,
+    });
+    try self.bindBufferMemory(&buf, mem, 0);
+    return buf;
+}
+
+pub fn bindBufferMemory(self: *Self, buffer: *vkt.Buffer, memory: vkt.DeviceMemory, offset: u32) !void {
+    _ = try self.dev.bindBufferMemory(buffer.hdl, memory.hdl, offset);
+    buffer.memory = memory;
+    buffer.mem_offset = offset;
+    if (memory.dev_addressable)
+        buffer.gpu_adr = self.dev.getBufferDeviceAddress(&vk.BufferDeviceAddressInfo{
+            .buffer = buffer.hdl,
+        });
+}
+
+pub fn mapBuffer(self: *Self, comptime T: type, buffer: vkt.Buffer) ![]T {
+    std.debug.assert(buffer.memory != null);
+    if (try self.dev.mapMemory(buffer.memory.?.hdl, buffer.mem_offset.?, buffer.size, .{})) |p| {
+        std.debug.assert(@intFromPtr(p) % @sizeOf(T) == 0);
+        std.debug.assert(buffer.size % @sizeOf(T) == 0);
+        return @as([*]T, @ptrCast(@alignCast(p)))[0..(buffer.size / @sizeOf(T))];
+    } else {
+        return error.MemoryMapFailed;
+    }
 }
 
 pub fn createDescPool(
@@ -444,7 +487,7 @@ fn createDevice(self: *Self, ator: Allocator) !void {
             // Works around a validation layer bug with descriptor pool allocation with VARIABLE_COUNT.
             // See: https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/2350.
             vk.extensions.khr_maintenance_1.name,
-            vk.extensions.ext_buffer_device_address.name,
+            vk.extensions.khr_buffer_device_address.name,
         },
         .p_enabled_features = &feats.features,
         // Enable dynamic rendering
