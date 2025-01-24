@@ -171,7 +171,7 @@ pub fn destroySemaphore(self: *Self, hdl: vk.Semaphore) void {
 
 pub fn allocateMemory(self: *Self, maybe_varena: ?*Arena, inf: vkt.MemoryAllocateInfo) !vkt.DeviceMemory {
     const alloc_flags = vk.MemoryAllocateFlagsInfo{
-        .flags = .{ .device_address_bit = true },
+        .flags = .{ .device_address_bit = true, .device_address_capture_replay_bit = true },
         .device_mask = 0, // unused
     };
 
@@ -460,6 +460,7 @@ fn createDevice(self: *Self, ator: Allocator) !void {
     // Buffer device address
     var bda_feats: vk.PhysicalDeviceBufferDeviceAddressFeatures = .{};
     bda_feats.buffer_device_address = vk.TRUE;
+    bda_feats.buffer_device_address_capture_replay = vk.TRUE;
     ddi_feats.p_next = &bda_feats; // Chain pNext
 
     var feats: vk.PhysicalDeviceFeatures2 = .{ .p_next = &ddi_feats, .features = undefined };
