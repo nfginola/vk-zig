@@ -62,7 +62,7 @@ pub fn main() !void {
     var varena = try ctx.createArena(arena.ator());
     defer varena.deinit();
 
-    const Vertex = struct {
+    const Vertex = packed struct {
         x: f32,
         y: f32,
         z: f32,
@@ -134,8 +134,16 @@ pub fn main() !void {
     //  x Change upload context to use device address buffers
     //  x Add helper for buffer/memory pair allocation
     //
-    //  - Use vertex pulling instead of VB/IB bind
-    //      - Remove vertex input state declaration
+    //  x Use vertex pulling instead of VB/IB bind
+    //      x Remove vertex input state declaration
+    //
+    //  x Fix RenderDoc
+    //      > Had to do with allocateMemory flags not being 'var'.
+    //        Memory is modified inside of RenderDoc and since using
+    //        const we only guarantee read-only storage, then it
+    //        segfaulted on write (it appends replay flag for
+    //        buffer device address if not present and using
+    //        buffer device address)
     //
     //  - Swapchain recreation on resize
     //      - Naive deviceWait preferred
@@ -290,31 +298,7 @@ pub fn main() !void {
                     .p_name = "main",
                 },
             },
-            .p_vertex_input_state = &vk.PipelineVertexInputStateCreateInfo{
-                .vertex_binding_description_count = 1,
-                .p_vertex_binding_descriptions = &.{
-                    vk.VertexInputBindingDescription{
-                        .binding = 0,
-                        .input_rate = .vertex,
-                        .stride = @sizeOf(Vertex),
-                    },
-                },
-                .vertex_attribute_description_count = 2,
-                .p_vertex_attribute_descriptions = &.{
-                    vk.VertexInputAttributeDescription{
-                        .binding = 0,
-                        .location = 0,
-                        .format = .r32g32b32_sfloat,
-                        .offset = @offsetOf(Vertex, "x"),
-                    },
-                    vk.VertexInputAttributeDescription{
-                        .binding = 0,
-                        .location = 1,
-                        .format = .r32g32b32_sfloat,
-                        .offset = @offsetOf(Vertex, "u"),
-                    },
-                },
-            },
+            .p_vertex_input_state = &vk.PipelineVertexInputStateCreateInfo{},
             .p_input_assembly_state = &vk.PipelineInputAssemblyStateCreateInfo{
                 .topology = .triangle_list,
                 .primitive_restart_enable = vk.FALSE,
@@ -408,13 +392,10 @@ pub fn main() !void {
         sem_ready_present: vk.Semaphore, // for present queue TODO: consider using timeline semaphores
         sem_work_finished: vk.Semaphore, // for future frames
         fence_work_finished: vk.Fence,
-
-        // sanity check
-        id: usize,
     };
 
     var pf: [MAX_FIF]PerFrame = undefined;
-    for (&pf, 0..) |*f, i| {
+    for (&pf) |*f| {
         // cpu
         f.farena = memh.Arena.init(arena.ator());
 
@@ -424,8 +405,6 @@ pub fn main() !void {
         f.sem_ready_present = try ctx.createSemaphore(varena);
         f.sem_work_finished = try ctx.createSemaphore(varena);
         f.fence_work_finished = try ctx.createFence(varena, .{ .signaled_bit = true });
-
-        f.id = i;
     }
 
     // Hack for semaphore waiting, consider using timeline semaphores
@@ -527,18 +506,18 @@ pub fn main() !void {
         };
 
         const rinfo: vk.RenderingInfoKHR = .{
-            .render_area = .{ .extent = .{ .width = window.getFramebufferSize().width, .height = window.getFramebufferSize().height }, .offset = .{ .x = 0, .y = 0 } },
+            .render_area = .{
+                .extent = .{ .width = window.getFramebufferSize().width, .height = window.getFramebufferSize().height },
+                .offset = .{ .x = 0, .y = 0 },
+            },
             .layer_count = 1,
             .color_attachment_count = 1,
             .p_color_attachments = &.{color_att},
             .view_mask = 0,
         };
         cmdb.bindDescriptorSets(.graphics, p_layout, 0, 1, &.{dset.hdl}, 0, null);
-
         cmdb.beginRenderingKHR(&rinfo);
         cmdb.bindPipeline(.graphics, pipes[0]);
-        cmdb.bindVertexBuffers(0, 1, &.{vb.hdl}, &.{0});
-        cmdb.bindIndexBuffer(ib.hdl, 0, .uint32);
         const pc: PushConstant = .{
             .adr = bd.gpu_adr.?,
             .pf_adr = pf_stack.buf.gpu_adr.? + pf_stack.getOffset(curr_f),
@@ -546,7 +525,14 @@ pub fn main() !void {
             .ib_adr = ib.gpu_adr.?,
         };
         cmdb.pushConstants(p_layout, .{ .vertex_bit = true }, 0, @sizeOf(PushConstant), &pc);
+
+        // bind index buffer even with Vertex pulling to allow
+        // GPU caching on vertex fetches
+        // should profile when we have some more complex scene :)
+        cmdb.bindIndexBuffer(ib.hdl, 0, .uint32);
         cmdb.drawIndexed(3, 1, 0, 0, 0);
+        // cmdb.draw(3, 1, 0, 0);
+
         cmdb.endRenderingKHR();
 
         cmdb.pipelineBarrier(.{ .color_attachment_output_bit = true }, .{ .top_of_pipe_bit = true }, .{}, 0, null, 0, null, 1, &.{

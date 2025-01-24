@@ -2,10 +2,6 @@
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_buffer_reference : require
 
-out gl_PerVertex {
-    vec4 gl_Position;
-};
-
 // Unsized arrays, requires extension to be turned on!
 // https://docs.vulkan.org/samples/latest/samples/extensions/descriptor_indexing/README.html
 layout(set = 0, binding = 0) uniform UBO {
@@ -20,14 +16,25 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Som
     float floats[];
 };
 
-// Pointer alignment, buffer_ref_align
-layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer PositionData
+// Appears like there's no alignment requirement here,
+// it just interprets the memory straight.
+// (We can use packed struct in Zig and match it here)
+struct Vertex {
+    vec3 position;
+    vec3 color;
+};
+
+layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer VertexData
 {
-    vec3 positions[];
+    Vertex data[];
+};
+
+layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer IndexData
+{
+    uint data[];
 };
 
 
-// Pointer alignment, buffer_ref_align
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer PerFrame
 {
     vec3 rgb;
@@ -48,30 +55,20 @@ layout(push_constant) uniform constants
 {
     SomeData some_data;
     PerFrame per_frame;
-    PositionData positions;
-} push_constants;
+    VertexData verts;
+    IndexData indices;
+} regs;
 
-layout(location = 0) in vec3 inPosition;
-layout(location = 1) in vec3 inColor;
 
 layout(location = 0) out vec3 fragColor;
 
-vec3 positions[3] = vec3[](
-    vec3(0.0, -0.5, 0.0),
-    vec3(-0.5, 0.5, 0.0),
-    vec3(0.5, 0.5, 0.0)
-);
-
-vec3 colors[3] = vec3[](
-    vec3(1.0, 0.0, 0.0),
-    vec3(0.0, 1.0, 0.0),
-    vec3(0.0, 0.0, 1.0)
-);
+out gl_PerVertex {
+    vec4 gl_Position;
+};
 
 void main() {
-    // gl_Position = vec4(positions[gl_VertexIndex], 1.0);
-    // fragColor = colors[gl_VertexIndex];
-    gl_Position = vec4(inPosition, 1.0);
-    fragColor = vec3(push_constants.per_frame.rgb);
+    uint id = regs.indices.data[gl_VertexIndex];
+    gl_Position = vec4(regs.verts.data[id].position.xyz, 1.0);
+    fragColor = vec3(regs.per_frame.rgb);
 
 }

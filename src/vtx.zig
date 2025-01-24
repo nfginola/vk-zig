@@ -170,8 +170,15 @@ pub fn destroySemaphore(self: *Self, hdl: vk.Semaphore) void {
 }
 
 pub fn allocateMemory(self: *Self, maybe_varena: ?*Arena, inf: vkt.MemoryAllocateInfo) !vkt.DeviceMemory {
-    const alloc_flags = vk.MemoryAllocateFlagsInfo{
-        .flags = .{ .device_address_bit = true, .device_address_capture_replay_bit = true },
+    // RenderDoc modifies this internally and we need to guarantee
+    // accessible memory!
+    // Check RDoc:vk_resource_funcs.cpp:727
+    // When device address bit is set, it internally sets
+    // device_address_capture_replay_bit
+    var alloc_flags = vk.MemoryAllocateFlagsInfo{
+        .flags = .{
+            .device_address_bit = true,
+        },
         .device_mask = 0, // unused
     };
 
@@ -476,20 +483,22 @@ fn createDevice(self: *Self, ator: Allocator) !void {
     //     std.debug.print("nay\n", .{});
     // }
 
+    const exts = &[_][*:0]const u8{
+        vk.extensions.khr_swapchain.name,
+        vk.extensions.khr_dynamic_rendering.name,
+        vk.extensions.ext_descriptor_indexing.name,
+        // Works around a validation layer bug with descriptor pool allocation with VARIABLE_COUNT.
+        // See: https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/2350.
+        vk.extensions.khr_maintenance_1.name,
+        vk.extensions.khr_buffer_device_address.name,
+    };
+
     // Queue capabilities are dependent on queue family identified by index
     const dev = try vkb.inst.createDevice(self.pd, &vk.DeviceCreateInfo{
         .queue_create_info_count = @intCast(q_cinfos.items.len),
         .p_queue_create_infos = @ptrCast(q_cinfos.items),
-        .enabled_extension_count = 5,
-        .pp_enabled_extension_names = &.{
-            vk.extensions.khr_swapchain.name,
-            vk.extensions.khr_dynamic_rendering.name,
-            vk.extensions.ext_descriptor_indexing.name,
-            // Works around a validation layer bug with descriptor pool allocation with VARIABLE_COUNT.
-            // See: https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/2350.
-            vk.extensions.khr_maintenance_1.name,
-            vk.extensions.khr_buffer_device_address.name,
-        },
+        .enabled_extension_count = exts.len,
+        .pp_enabled_extension_names = exts,
         .p_enabled_features = &feats.features,
         // Enable dynamic rendering
         // Enable DDI (additional)
