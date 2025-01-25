@@ -56,7 +56,6 @@ pub fn main() !void {
     defer arena.deinit();
 
     var ctx = try nvk.create(arena.ator(), .{ .name = "Vulkan Engine", .window = window });
-    const dev = ctx.dev;
     var gq = ctx.getQueue(.graphics);
     defer ctx.deinit();
 
@@ -446,14 +445,7 @@ pub fn main() !void {
 
         var cmdp = curr_pf.cmdp;
 
-        _ = try ctx.dev.waitSemaphores(
-            &.{
-                .semaphore_count = 1,
-                .p_semaphores = &.{curr_pf.sem_work_finished.hdl},
-                .p_values = &.{curr_pf.sem_work_finished.value},
-            },
-            std.math.maxInt(u64),
-        );
+        try ctx.waitSemaphores(&[_]vkt.Semaphore{curr_pf.sem_work_finished});
 
         const sc_next = try ctx.sc.getNext(curr_pf.sem_img_acq.hdl, null) orelse continue;
 
@@ -564,5 +556,5 @@ pub fn main() !void {
         try ctx.sc.present(gq, curr_pf.sem_ready_present.hdl);
     }
 
-    dev.deviceWaitIdle() catch unreachable;
+    ctx.dev.deviceWaitIdle() catch unreachable;
 }

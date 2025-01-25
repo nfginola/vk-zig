@@ -190,6 +190,25 @@ pub fn destroySemaphoreT(self: *Self, sem: vkt.Semaphore) void {
     self.dev.destroySemaphore(sem.hdl, null);
 }
 
+pub fn waitSemaphores(self: *Self, sems: []const vkt.Semaphore) !void {
+    var sems_raw: [8]vk.Semaphore = undefined;
+    var values: [8]u64 = undefined;
+    for (sems, 0..) |sem, i| {
+        std.debug.assert(sem.timeline);
+        sems_raw[i] = sem.hdl;
+        values[i] = sem.value;
+    }
+
+    _ = try self.dev.waitSemaphores(
+        &.{
+            .semaphore_count = @intCast(sems.len),
+            .p_semaphores = &sems_raw,
+            .p_values = &values,
+        },
+        std.math.maxInt(u64),
+    );
+}
+
 pub fn allocateMemory(self: *Self, maybe_varena: ?*Arena, inf: vkt.MemoryAllocateInfo) !vkt.DeviceMemory {
     // RenderDoc modifies this internally and we need to guarantee
     // accessible memory!
