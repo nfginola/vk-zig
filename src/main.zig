@@ -94,7 +94,7 @@ pub fn main() !void {
     const indices = [_]u32{ 0, 1, 2 };
     try upload.copy_to_buffer(vb, .{ .vertex_shader_bit = true }, try upload.push(memh.byteSliceC(Vertex, vertices[0..]), 0));
     try upload.copy_to_buffer(ib, .{ .vertex_shader_bit = true }, try upload.push(memh.byteSliceC(u32, indices[0..]), 0));
-    try upload.submit(.graphics, null);
+    _ = try upload.submit(.graphics);
     try upload.host_wait();
 
     // TODO:
@@ -391,9 +391,6 @@ pub fn main() !void {
         sem_ready_present: vk.Semaphore, // for present queue TODO: consider using timeline semaphores
 
         sem_work_finished: vkt.Semaphore, // for future frames
-        fence_work_finished: vk.Fence,
-
-        worked: bool = false, // if this GPU frame was skipped
     };
 
     var pf: [MAX_FIF]PerFrame = undefined;
@@ -406,12 +403,7 @@ pub fn main() !void {
         f.sem_img_acq = try ctx.createSemaphore(varena);
         f.sem_ready_present = try ctx.createSemaphore(varena);
         f.sem_work_finished = try ctx.createSemaphoreT(varena);
-        f.fence_work_finished = try ctx.createFence(varena, .{ .signaled_bit = true });
     }
-
-    // Hack for semaphore waiting, consider using timeline semaphores
-    // to be able to wait for an monotonically increasing counter..
-    var first_frame: bool = true;
 
     var prev_pf: PerFrame = pf[MAX_FIF - 1];
     var curr_f: u32 = 0;
@@ -435,7 +427,6 @@ pub fn main() !void {
     while (!window.shouldClose()) {
         glfw.pollEvents();
 
-        defer first_frame = false;
         var curr_pf = &pf[curr_f];
         defer curr_f = (curr_f + 1) % MAX_FIF;
         defer prev_pf = pf[curr_f];
@@ -469,19 +460,16 @@ pub fn main() !void {
 
         var cmdp = curr_pf.cmdp;
 
-        if (curr_pf.worked) // if last iteration of this pf worked, only then we should wait
-            try ctx.waitForFences(&[_]vk.Fence{curr_pf.fence_work_finished});
-        try ctx.resetFences(&[_]vk.Fence{curr_pf.fence_work_finished});
-        if (window.getKey(glfw.Key.r) == glfw.Action.press) {
-            curr_pf.worked = false;
-            continue;
-        }
+        _ = try ctx.dev.waitSemaphores(
+            &.{
+                .semaphore_count = 1,
+                .p_semaphores = &.{curr_pf.sem_work_finished.hdl},
+                .p_values = &.{curr_pf.sem_work_finished.value},
+            },
+            std.math.maxInt(u64),
+        );
 
-        const sc_next = try ctx.sc.getNext(curr_pf.sem_img_acq, null) orelse {
-            curr_pf.worked = false;
-            continue;
-        };
-        curr_pf.worked = true;
+        const sc_next = try ctx.sc.getNext(curr_pf.sem_img_acq, null) orelse continue;
 
         defer pf_stack.next_block();
         const dyn = try pf_stack.grab(PerFrameData, 0);
@@ -584,7 +572,7 @@ pub fn main() !void {
         const timeline = vk.TimelineSemaphoreSubmitInfo{
             .signal_semaphore_value_count = 2,
             .p_signal_semaphore_values = &.{ curr_pf.sem_work_finished.next(), 0 },
-            .wait_semaphore_value_count = if (prev_pf.worked) 2 else 1,
+            .wait_semaphore_value_count = 2,
             .p_wait_semaphore_values = &.{ 0, prev_pf.sem_work_finished.value },
         };
         try gq.api.submit(1, &.{
@@ -594,12 +582,12 @@ pub fn main() !void {
                 .signal_semaphore_count = 2,
                 .p_signal_semaphores = &.{ curr_pf.sem_work_finished.hdl, curr_pf.sem_ready_present },
                 // Chain GPU frames (truly transient per frame resources)
-                .wait_semaphore_count = if (prev_pf.worked) 2 else 1,
+                .wait_semaphore_count = 2,
                 .p_wait_semaphores = &.{ curr_pf.sem_img_acq, prev_pf.sem_work_finished.hdl },
                 .p_wait_dst_stage_mask = &.{ .{ .top_of_pipe_bit = true }, .{ .top_of_pipe_bit = true } },
                 .p_next = &timeline,
             },
-        }, curr_pf.fence_work_finished);
+        }, .null_handle);
 
         try ctx.sc.present(gq, curr_pf.sem_ready_present);
     }

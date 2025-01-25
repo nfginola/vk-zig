@@ -29,17 +29,16 @@ varena: *nvk.Arena = undefined,
 vtx: *nvk = undefined,
 vk_buf: vkt.Buffer = undefined,
 
-fence_on: bool = true,
+host_waitable: bool = true,
 
 cmdp_transfer: vkt.CommandPool = undefined,
 cmdb_transfer: vkt.CommandBuffer = undefined,
 transfer_queue: vkt.Queue = undefined,
-transfer_fence: vk.Fence = undefined,
 transfer_sem: vkt.Semaphore = undefined, // Sync between ownership release and acq submits
 
 cmdp_target: vkt.CommandPool = undefined,
 cmdb_target: vkt.CommandBuffer = undefined,
-target_fence: vk.Fence = undefined,
+target_sem: vkt.Semaphore = undefined, // Sync between ownership release and acq submits
 
 curr_target_queue: ?vkt.QueueType = null,
 
@@ -99,7 +98,7 @@ pub fn copy_to_buffer(self: *Self, dst: vkt.Buffer, dst_stage: vk.PipelineStageF
 /// User can optionally pass a semaphore that will be
 /// signaled once transfer and qf ownership transfer have
 /// both completed
-pub fn submit(self: *Self, target: vkt.QueueType, sem_out: ?vk.Semaphore) !void {
+pub fn submit(self: *Self, target: vkt.QueueType) !vkt.Semaphore {
     try self.host_wait();
 
     // Note or ownership transfer:
@@ -190,7 +189,7 @@ pub fn submit(self: *Self, target: vkt.QueueType, sem_out: ?vk.Semaphore) !void 
             .p_signal_semaphores = &.{self.transfer_sem.hdl},
             .p_next = &timeline,
         };
-        _ = try self.transfer_queue.api.submit(1, &.{ci}, self.transfer_fence);
+        _ = try self.transfer_queue.api.submit(1, &.{ci}, .null_handle);
     }
 
     // qf ownership acqusition for target family
@@ -211,32 +210,43 @@ pub fn submit(self: *Self, target: vkt.QueueType, sem_out: ?vk.Semaphore) !void 
         const timeline = vk.TimelineSemaphoreSubmitInfo{
             .wait_semaphore_value_count = 1,
             .p_wait_semaphore_values = &.{self.transfer_sem.value},
+            .signal_semaphore_value_count = 1,
+            .p_signal_semaphore_values = &.{self.target_sem.next()},
         };
         const ci = vk.SubmitInfo{
-            .p_command_buffers = &.{self.cmdb_target.handle},
             .command_buffer_count = 1,
-            .signal_semaphore_count = if (sem_out != null) 1 else 0,
-            .p_signal_semaphores = if (sem_out != null) &.{sem_out.?} else null,
+            .p_command_buffers = &.{self.cmdb_target.handle},
+            .p_wait_dst_stage_mask = &.{.{ .transfer_bit = true }},
             .wait_semaphore_count = 1,
             .p_wait_semaphores = &.{self.transfer_sem.hdl},
-            .p_wait_dst_stage_mask = &.{.{ .transfer_bit = true }},
+            .signal_semaphore_count = 1,
+            .p_signal_semaphores = &.{self.target_sem.hdl},
             .p_next = &timeline,
         };
-        _ = try target_queue.api.submit(1, &.{ci}, self.target_fence);
+        _ = try target_queue.api.submit(1, &.{ci}, .null_handle);
     }
 
     // CPU payload submitted, can release transient info
     self.top = 0;
     self.copies.clearAndFree();
     _ = self.arena.arena.reset(.retain_capacity);
+    self.host_waitable = true;
 
-    self.fence_on = true;
+    return self.target_sem;
 }
 
 pub fn host_wait(self: *Self) !void {
-    if (self.fence_on) {
-        try self.vtx.waitResetFences(&[_]vk.Fence{ self.transfer_fence, self.target_fence });
-        self.fence_on = false; // do once
+    if (self.host_waitable) {
+        _ = try self.vtx.dev.waitSemaphores(
+            &.{
+                .semaphore_count = 2,
+                .p_semaphores = &.{ self.transfer_sem.hdl, self.target_sem.hdl },
+                .p_values = &.{ self.transfer_sem.value, self.target_sem.value },
+            },
+            std.math.maxInt(u64),
+        );
+
+        self.host_waitable = false; // do once
 
         try self.cmdp_transfer.reset(.{});
         self.cmdb_transfer = try self.cmdp_transfer.alloc(.primary, 1);
@@ -254,11 +264,10 @@ pub fn create(ator: Allocator, vtx: *nvk, total_size: u32) !*Self {
     self.copies = try std.ArrayList(CopyKind).initCapacity(self.arena.ator(), 100);
 
     self.transfer_queue = self.vtx.getQueue(.transfer);
-    self.transfer_fence = try self.vtx.createFence(self.varena, .{ .signaled_bit = true });
     self.transfer_sem = try self.vtx.createSemaphoreT(self.varena);
     self.cmdp_transfer = try vtx.createCmdPool(self.varena, .transfer, .{ .transient_bit = true });
 
-    self.target_fence = try self.vtx.createFence(self.varena, .{ .signaled_bit = true });
+    self.target_sem = try self.vtx.createSemaphoreT(self.varena);
 
     self.vk_buf = try vtx.createBufferWithMemory(self.varena, .{
         .size = total_size,
