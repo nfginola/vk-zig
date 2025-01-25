@@ -13,12 +13,6 @@ pub const Receipt = struct {
 
 const Self = @This();
 
-// We can replace managing our own stack
-// with the FixedBufferAllocator.. but lets go manual for now
-//
-// - allocWithOptions for alignment
-// - reset
-
 top: usize = 0,
 memory: []u8 = undefined,
 
@@ -38,7 +32,7 @@ transfer_sem: vkt.Semaphore = undefined, // Sync between ownership release and a
 
 cmdp_target: vkt.CommandPool = undefined,
 cmdb_target: vkt.CommandBuffer = undefined,
-target_sem: vkt.Semaphore = undefined, // Sync between ownership release and acq submits
+target_sem: vkt.Semaphore = undefined, // Sync between ownership acq and (optionally) outside
 
 curr_target_queue: ?vkt.QueueType = null,
 
@@ -178,18 +172,11 @@ pub fn submit(self: *Self, target: vkt.QueueType) !vkt.Semaphore {
         );
 
         try self.cmdb_transfer.endCommandBuffer();
-        const timeline = vk.TimelineSemaphoreSubmitInfo{
-            .signal_semaphore_value_count = 1,
-            .p_signal_semaphore_values = &.{self.transfer_sem.next()},
-        };
-        const ci = vk.SubmitInfo{
-            .p_command_buffers = &.{self.cmdb_transfer.handle},
-            .command_buffer_count = 1,
-            .signal_semaphore_count = 1,
-            .p_signal_semaphores = &.{self.transfer_sem.hdl},
-            .p_next = &timeline,
-        };
-        _ = try self.transfer_queue.api.submit(1, &.{ci}, .null_handle);
+
+        try self.transfer_queue.submit(.{
+            .cmdbs = &[_]vk.CommandBuffer{self.cmdb_transfer.handle},
+            .signals = &[_]*vkt.Semaphore{&self.transfer_sem},
+        });
     }
 
     // qf ownership acqusition for target family
@@ -207,23 +194,12 @@ pub fn submit(self: *Self, target: vkt.QueueType) !vkt.Semaphore {
             null,
         );
         try self.cmdb_target.endCommandBuffer();
-        const timeline = vk.TimelineSemaphoreSubmitInfo{
-            .wait_semaphore_value_count = 1,
-            .p_wait_semaphore_values = &.{self.transfer_sem.value},
-            .signal_semaphore_value_count = 1,
-            .p_signal_semaphore_values = &.{self.target_sem.next()},
-        };
-        const ci = vk.SubmitInfo{
-            .command_buffer_count = 1,
-            .p_command_buffers = &.{self.cmdb_target.handle},
-            .p_wait_dst_stage_mask = &.{.{ .transfer_bit = true }},
-            .wait_semaphore_count = 1,
-            .p_wait_semaphores = &.{self.transfer_sem.hdl},
-            .signal_semaphore_count = 1,
-            .p_signal_semaphores = &.{self.target_sem.hdl},
-            .p_next = &timeline,
-        };
-        _ = try target_queue.api.submit(1, &.{ci}, .null_handle);
+
+        try target_queue.submit(.{
+            .cmdbs = &[_]vk.CommandBuffer{self.cmdb_target.handle},
+            .waits = &[_]*vkt.Semaphore{&self.transfer_sem},
+            .signals = &[_]*vkt.Semaphore{&self.target_sem},
+        });
     }
 
     // CPU payload submitted, can release transient info
@@ -246,7 +222,7 @@ pub fn host_wait(self: *Self) !void {
             std.math.maxInt(u64),
         );
 
-        self.host_waitable = false; // do once
+        self.host_waitable = false;
 
         try self.cmdp_transfer.reset(.{});
         self.cmdb_transfer = try self.cmdp_transfer.alloc(.primary, 1);

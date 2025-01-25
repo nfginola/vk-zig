@@ -6,7 +6,130 @@ const vsc = @import("vk_sc.zig");
 pub const Device = vkb.Device;
 pub const CommandBuffer = vkb.CommandBuffer;
 
-pub const Queue = struct { api: vkb.Queue = undefined, fam: ?u32 = null, id: u32 = 0 };
+pub const SemaphoreSubmitInfo = struct {
+    // If timeline semaphore, monotonically increasing counter automatically updated
+    semaphore: *Semaphore,
+    // I assume using all commands bit emulates when semaphores get waited/signaled
+    // previously (without this option).
+    // In other words, when queue waits, it waits at top of pipe.
+    // When queue signals, it waits at bottom of pipe (all is done).
+    stage_mask: vk.PipelineStageFlags2 = .{ .all_commands_bit = true },
+};
+
+pub const Queue = struct {
+    const Self = @This();
+    api: vkb.Queue = undefined,
+    fam: ?u32 = null,
+    id: u32 = 0,
+
+    pub const SubmitInfo = struct {
+        cmdbs: []const vk.CommandBuffer,
+        waits: ?[]const *Semaphore = null,
+        signals: ?[]const *Semaphore = null,
+    };
+
+    pub const SubmitInfo2 = struct {
+        cmdbs: []const vk.CommandBuffer,
+        waits: ?[]const SemaphoreSubmitInfo = null,
+        signals: ?[]const SemaphoreSubmitInfo = null,
+    };
+
+    /// Submit without stage masks
+    pub fn submit(self: *Self, inf: SubmitInfo) !void {
+        var cmdbs: [8]vk.CommandBufferSubmitInfo = undefined;
+        var waits: [8]vk.SemaphoreSubmitInfo = undefined;
+        var signals: [8]vk.SemaphoreSubmitInfo = undefined;
+
+        for (inf.cmdbs, 0..) |cmdb, i| {
+            cmdbs[i] = vk.CommandBufferSubmitInfo{
+                .command_buffer = cmdb,
+                .device_mask = 0,
+            };
+        }
+
+        if (inf.waits != null) {
+            for (inf.waits.?, 0..) |wait, i| {
+                waits[i] = vk.SemaphoreSubmitInfo{
+                    .semaphore = wait.hdl,
+                    .stage_mask = .{ .all_commands_bit = true },
+                    .value = if (wait.timeline) wait.value else 0,
+                    .device_index = 0,
+                };
+            }
+        }
+
+        if (inf.signals != null) {
+            for (inf.signals.?, 0..) |signal, i| {
+                signals[i] = vk.SemaphoreSubmitInfo{
+                    .semaphore = signal.hdl,
+                    .stage_mask = .{ .all_commands_bit = true },
+                    .value = if (signal.timeline) signal.next() else 0,
+                    .device_index = 0,
+                };
+            }
+        }
+
+        try self.api.submit2(1, &.{
+            vk.SubmitInfo2{
+                .command_buffer_info_count = @intCast(inf.cmdbs.len),
+                .p_command_buffer_infos = &cmdbs,
+                .wait_semaphore_info_count = if (inf.waits != null) @intCast(inf.waits.?.len) else 0,
+                .p_wait_semaphore_infos = &waits,
+                .signal_semaphore_info_count = if (inf.signals != null) @intCast(inf.signals.?.len) else 0,
+                .p_signal_semaphore_infos = &signals,
+            },
+        }, .null_handle);
+    }
+
+    /// Submit with stage masks
+    pub fn submit2(self: *Self, inf: SubmitInfo2) !void {
+        var cmdbs: [8]vk.CommandBufferSubmitInfo = undefined;
+        var waits: [8]vk.SemaphoreSubmitInfo = undefined;
+        var signals: [8]vk.SemaphoreSubmitInfo = undefined;
+
+        for (inf.cmdbs, 0..) |cmdb, i| {
+            cmdbs[i] = vk.CommandBufferSubmitInfo{
+                .command_buffer = cmdb,
+                .device_mask = 0,
+            };
+        }
+
+        if (inf.waits != null) {
+            for (inf.waits.?, 0..) |wait, i| {
+                waits[i] = vk.SemaphoreSubmitInfo{
+                    .semaphore = wait.semaphore.hdl,
+                    .stage_mask = wait.stage_mask,
+                    .value = if (wait.semaphore.timeline) wait.semaphore.value else 0,
+                    .device_index = 0,
+                };
+            }
+        }
+
+        if (inf.signals != null) {
+            for (inf.signals.?, 0..) |signal, i| {
+                signals[i] = vk.SemaphoreSubmitInfo{
+                    .semaphore = signal.semaphore.hdl,
+                    .stage_mask = signal.stage_mask,
+                    .value = if (signal.semaphore.timeline) signal.semaphore.next() else 0,
+                    .device_index = 0,
+                };
+            }
+        }
+
+        try self.api.submit2(1, &.{
+            vk.SubmitInfo2{
+                .command_buffer_info_count = @intCast(inf.cmdbs.len),
+                .p_command_buffer_infos = &cmdbs,
+                .wait_semaphore_info_count = if (inf.waits != null) @intCast(inf.waits.?.len) else 0,
+                .p_wait_semaphore_infos = &waits,
+                .signal_semaphore_info_count = if (inf.signals != null) @intCast(inf.signals.?.len) else 0,
+                .p_signal_semaphore_infos = &signals,
+            },
+        }, .null_handle);
+    }
+
+    // pub fn submitMulti, if we would ever need..
+};
 pub const Buffer = struct {
     hdl: vk.Buffer,
     size: u64,
@@ -25,6 +148,7 @@ pub const Semaphore = struct {
 
     hdl: vk.Semaphore,
     value: u64 = 0,
+    timeline: bool,
 
     pub fn next(self: *Self) u64 {
         self.value += 1;

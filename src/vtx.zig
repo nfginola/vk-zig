@@ -145,18 +145,24 @@ pub fn destroyFence(self: *Self, hdl: vk.Fence) void {
 }
 
 /// Binary semaphore
-pub fn createSemaphore(self: *Self, maybe_varena: ?*Arena) !vk.Semaphore {
+pub fn createSemaphore(self: *Self, maybe_varena: ?*Arena) !vkt.Semaphore {
     const sem = try self.dev.createSemaphore(&.{}, null);
 
+    const ret: vkt.Semaphore = .{
+        .hdl = sem,
+        .value = 0,
+        .timeline = false,
+    };
+
     if (maybe_varena) |varena| {
-        try varena.add(@TypeOf(sem), Self.destroySemaphore, sem);
+        try varena.add(@TypeOf(ret), Self.destroySemaphore, ret);
     }
 
-    return sem;
+    return ret;
 }
 
-pub fn destroySemaphore(self: *Self, hdl: vk.Semaphore) void {
-    self.dev.destroySemaphore(hdl, null);
+pub fn destroySemaphore(self: *Self, sem: vkt.Semaphore) void {
+    self.dev.destroySemaphore(sem.hdl, null);
 }
 
 pub fn createSemaphoreT(self: *Self, maybe_varena: ?*Arena) !vkt.Semaphore {
@@ -170,6 +176,7 @@ pub fn createSemaphoreT(self: *Self, maybe_varena: ?*Arena) !vkt.Semaphore {
             .p_next = &timeline_ci,
         }, null),
         .value = 0,
+        .timeline = true,
     };
 
     if (maybe_varena) |varena| {
@@ -487,6 +494,10 @@ fn createDevice(self: *Self, ator: Allocator) !void {
     var time_sem = vk.PhysicalDeviceTimelineSemaphoreFeatures{};
     bda_feats.p_next = &time_sem;
 
+    var sync2 = vk.PhysicalDeviceSynchronization2Features{};
+    sync2.synchronization_2 = vk.TRUE;
+    time_sem.p_next = &sync2;
+
     var feats: vk.PhysicalDeviceFeatures2 = .{ .p_next = &ddi_feats, .features = undefined };
 
     // Turn on/off features available in the physical device
@@ -508,6 +519,7 @@ fn createDevice(self: *Self, ator: Allocator) !void {
         // See: https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/2350.
         vk.extensions.khr_maintenance_1.name,
         vk.extensions.khr_buffer_device_address.name,
+        vk.extensions.khr_synchronization_2.name, // QueueSubmit2
     };
 
     // Queue capabilities are dependent on queue family identified by index

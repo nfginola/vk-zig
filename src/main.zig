@@ -57,7 +57,7 @@ pub fn main() !void {
 
     var ctx = try nvk.create(arena.ator(), .{ .name = "Vulkan Engine", .window = window });
     const dev = ctx.dev;
-    const gq = ctx.getQueue(.graphics);
+    var gq = ctx.getQueue(.graphics);
     defer ctx.deinit();
 
     var upload = try utx.create(arena.ator(), ctx, 64_000);
@@ -136,7 +136,6 @@ pub fn main() !void {
     //  x Refactor descriptor allocation API
     //
     //  x Support buffer device address
-    //  x Change upload context to use device address buffers
     //  x Add helper for buffer/memory pair allocation
     //
     //  x Use vertex pulling instead of VB/IB bind
@@ -151,22 +150,9 @@ pub fn main() !void {
     //        buffer device address)
     //
     //  x Use timeline semaphores
+    //  x Swapchain recreation on resize
     //
-    //  - Swapchain recreation on resize
-    //      - Naive deviceWait preferred
-    //      - Since this happens after vkWaitResetFences and we
-    //        have yet to wait on any previous semaphores, we
-    //        dont need to discard any of those resources and
-    //        should resume again on the same PerFrame data once
-    //        SC resources have been recreated.
-    //        --> getNext() should have a while() or similar to recreate
-    //
-    //        This can fail on Present too.. at that point the sync items
-    //        for the queue submit is still fine.
-    //
-    //        In other words, one getNext() and present(),
-    //        ensure that SC is recreated inside before returning to
-    //        normal ensuring normal PF stepping
+    //  - Add
     //
     //  - Make Gfx pipeline helpers
     //
@@ -176,7 +162,7 @@ pub fn main() !void {
     //      - Vector2,3,4
     //          - vadd, vsub, vdivFac, vmulFac, dot, cross
     //      - Mat2,3,4
-    //          - store row-major for easy mul calc (n row*column)
+    //          - store column-major for better grounding to math conventions
     //          - mat2 x v2
     //          - mat3 x v3
     //          - mat4 x v4
@@ -387,8 +373,8 @@ pub fn main() !void {
 
         // gpu
         cmdp: vkt.CommandPool,
-        sem_img_acq: vk.Semaphore,
-        sem_ready_present: vk.Semaphore, // for present queue TODO: consider using timeline semaphores
+        sem_img_acq: vkt.Semaphore,
+        sem_ready_present: vkt.Semaphore, // for present queue TODO: consider using timeline semaphores
 
         sem_work_finished: vkt.Semaphore, // for future frames
     };
@@ -469,7 +455,7 @@ pub fn main() !void {
             std.math.maxInt(u64),
         );
 
-        const sc_next = try ctx.sc.getNext(curr_pf.sem_img_acq, null) orelse continue;
+        const sc_next = try ctx.sc.getNext(curr_pf.sem_img_acq.hdl, null) orelse continue;
 
         defer pf_stack.next_block();
         const dyn = try pf_stack.grab(PerFrameData, 0);
@@ -569,27 +555,13 @@ pub fn main() !void {
 
         cmdb.endCommandBuffer() catch unreachable;
 
-        const timeline = vk.TimelineSemaphoreSubmitInfo{
-            .signal_semaphore_value_count = 2,
-            .p_signal_semaphore_values = &.{ curr_pf.sem_work_finished.next(), 0 },
-            .wait_semaphore_value_count = 2,
-            .p_wait_semaphore_values = &.{ 0, prev_pf.sem_work_finished.value },
-        };
-        try gq.api.submit(1, &.{
-            vk.SubmitInfo{
-                .command_buffer_count = 1,
-                .p_command_buffers = &.{cmdb.handle},
-                .signal_semaphore_count = 2,
-                .p_signal_semaphores = &.{ curr_pf.sem_work_finished.hdl, curr_pf.sem_ready_present },
-                // Chain GPU frames (truly transient per frame resources)
-                .wait_semaphore_count = 2,
-                .p_wait_semaphores = &.{ curr_pf.sem_img_acq, prev_pf.sem_work_finished.hdl },
-                .p_wait_dst_stage_mask = &.{ .{ .top_of_pipe_bit = true }, .{ .top_of_pipe_bit = true } },
-                .p_next = &timeline,
-            },
-        }, .null_handle);
+        try gq.submit(.{
+            .cmdbs = &[_]vk.CommandBuffer{cmdb.handle},
+            .waits = &[_]*vkt.Semaphore{ &curr_pf.sem_img_acq, &prev_pf.sem_work_finished },
+            .signals = &[_]*vkt.Semaphore{ &curr_pf.sem_ready_present, &curr_pf.sem_work_finished },
+        });
 
-        try ctx.sc.present(gq, curr_pf.sem_ready_present);
+        try ctx.sc.present(gq, curr_pf.sem_ready_present.hdl);
     }
 
     dev.deviceWaitIdle() catch unreachable;
