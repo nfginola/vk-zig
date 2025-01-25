@@ -25,7 +25,12 @@ fn initGLFW() glfw.Window {
     }
 
     // Create our window
-    return glfw.Window.create(WIDTH, HEIGHT, "Graphics Application", null, null, .{ .client_api = .no_api, .position_x = 700, .position_y = 300 }) orelse {
+    return glfw.Window.create(WIDTH, HEIGHT, "Graphics Application", null, null, .{
+        .client_api = .no_api,
+        .position_x = 700,
+        .position_y = 300,
+        .resizable = true,
+    }) orelse {
         std.log.err("Failed to create Window: {?s}", .{glfw.getErrorString()});
         std.process.exit(1);
     };
@@ -66,25 +71,25 @@ pub fn main() !void {
         x: f32,
         y: f32,
         z: f32,
-        u: f32,
-        v: f32,
-        w: f32,
+        r: f32,
+        g: f32,
+        b: f32,
     };
     const vb = try ctx.createBufferWithMemory(varena, .{
         .size = 32_000,
         .usage = .{ .vertex_buffer_bit = true, .transfer_dst_bit = true, .shader_device_address_bit = true },
-        .mem_type = .cpu_to_gpu,
+        .mem_type = .gpu,
     });
     const ib = try ctx.createBufferWithMemory(varena, .{
         .size = 32_000,
         .usage = .{ .index_buffer_bit = true, .transfer_dst_bit = true, .shader_device_address_bit = true },
-        .mem_type = .cpu_to_gpu,
+        .mem_type = .gpu,
     });
     // Upload tri and indices
     const vertices = [_]Vertex{
-        .{ .x = 0.0, .y = -0.5, .z = 0.0, .u = 1.0, .v = 0.0, .w = 0.0 },
-        .{ .x = -0.5, .y = 0.5, .z = 0.0, .u = 0.0, .v = 1.0, .w = 0.0 },
-        .{ .x = 0.5, .y = 0.5, .z = 0.0, .u = 0.0, .v = 0.0, .w = 1.0 },
+        .{ .x = 0.0, .y = -0.5, .z = 0.0, .r = 1.0, .g = 0.0, .b = 0.0 },
+        .{ .x = -0.5, .y = 0.5, .z = 0.0, .r = 0.0, .g = 1.0, .b = 0.0 },
+        .{ .x = 0.5, .y = 0.5, .z = 0.0, .r = 0.0, .g = 0.0, .b = 1.0 },
     };
     const indices = [_]u32{ 0, 1, 2 };
     try upload.copy_to_buffer(vb, .{ .vertex_shader_bit = true }, try upload.push(memh.byteSliceC(Vertex, vertices[0..]), 0));
@@ -145,6 +150,8 @@ pub fn main() !void {
     //        buffer device address if not present and using
     //        buffer device address)
     //
+    //  x Use timeline semaphores
+    //
     //  - Swapchain recreation on resize
     //      - Naive deviceWait preferred
     //      - Since this happens after vkWaitResetFences and we
@@ -179,9 +186,7 @@ pub fn main() !void {
     //
 
     var pf_stack = try vkds.Stack.init(varena, ctx, .{ .rr_block_size = 2048, .rr_blocks = MAX_FIF, .device_adr = true });
-
-    // ======================== SETUP UBO
-    const TestUBO = struct {
+    const PerFrameData = packed struct {
         r: f32,
         g: f32,
         b: f32,
@@ -281,9 +286,24 @@ pub fn main() !void {
         .depth_attachment_format = .undefined,
         .stencil_attachment_format = .undefined,
     };
+
+    const dyn_states = &[_]vk.DynamicState{
+        // With count required if we want to pass ViewportStateCreateInfo with 0 counts
+        // for pipeline --> which we needed since rasterizer_discard_enable = FALSE,
+        // requires a VPci even if we dynamically set
+        vk.DynamicState.viewport_with_count,
+        vk.DynamicState.scissor_with_count,
+    };
+
+    const dyn_state_ci = vk.PipelineDynamicStateCreateInfo{
+        .dynamic_state_count = dyn_states.len,
+        .p_dynamic_states = dyn_states,
+    };
+
     var pipes: [1]vk.Pipeline = undefined;
     _ = try ctx.dev.createGraphicsPipelines(.null_handle, pipes.len, &.{
         vk.GraphicsPipelineCreateInfo{
+            .p_dynamic_state = &dyn_state_ci,
             .p_next = &target_details,
             .stage_count = 2,
             .p_stages = &.{
@@ -333,6 +353,8 @@ pub fn main() !void {
                 .depth_bias_slope_factor = 0.0,
                 .line_width = 1.0,
             },
+            // If rasterizer_discard_enable = FALSE, spec requires us setting a Viewport (even if dynamic)
+            .p_viewport_state = &vk.PipelineViewportStateCreateInfo{},
             .p_color_blend_state = &vk.PipelineColorBlendStateCreateInfo{
                 .logic_op_enable = vk.FALSE,
                 .logic_op = .clear,
@@ -348,29 +370,6 @@ pub fn main() !void {
                         .dst_alpha_blend_factor = .one,
                         .dst_color_blend_factor = .one,
                         .src_color_blend_factor = .one,
-                    },
-                },
-            },
-            .p_viewport_state = &vk.PipelineViewportStateCreateInfo{
-                .scissor_count = 1,
-                .viewport_count = 1,
-                .p_viewports = &.{
-                    vk.Viewport{
-                        .x = 0,
-                        .y = 0,
-                        .width = @floatFromInt(ctx.sc.getExtent().width),
-                        .height = @floatFromInt(ctx.sc.getExtent().height),
-                        .min_depth = 0.0,
-                        .max_depth = 1.0,
-                    },
-                },
-                .p_scissors = &.{
-                    vk.Rect2D{
-                        .offset = .{
-                            .x = 0,
-                            .y = 0,
-                        },
-                        .extent = ctx.sc.getExtent(),
                     },
                 },
             },
@@ -390,8 +389,11 @@ pub fn main() !void {
         cmdp: vkt.CommandPool,
         sem_img_acq: vk.Semaphore,
         sem_ready_present: vk.Semaphore, // for present queue TODO: consider using timeline semaphores
-        sem_work_finished: vk.Semaphore, // for future frames
+
+        sem_work_finished: vkt.Semaphore, // for future frames
         fence_work_finished: vk.Fence,
+
+        worked: bool = false, // if this GPU frame was skipped
     };
 
     var pf: [MAX_FIF]PerFrame = undefined;
@@ -403,7 +405,7 @@ pub fn main() !void {
         f.cmdp = try ctx.createCmdPool(varena, .graphics, .{ .transient_bit = true });
         f.sem_img_acq = try ctx.createSemaphore(varena);
         f.sem_ready_present = try ctx.createSemaphore(varena);
-        f.sem_work_finished = try ctx.createSemaphore(varena);
+        f.sem_work_finished = try ctx.createSemaphoreT(varena);
         f.fence_work_finished = try ctx.createFence(varena, .{ .signaled_bit = true });
     }
 
@@ -431,16 +433,13 @@ pub fn main() !void {
     bd_map[2] = 0.5;
 
     while (!window.shouldClose()) {
+        glfw.pollEvents();
+
         defer first_frame = false;
-        var curr_pf = pf[curr_f];
+        var curr_pf = &pf[curr_f];
         defer curr_f = (curr_f + 1) % MAX_FIF;
         defer prev_pf = pf[curr_f];
-
         defer _ = curr_pf.farena.arena.reset(.retain_capacity);
-
-        if (window.getKey(glfw.Key.escape) == glfw.Action.press) {
-            break;
-        }
 
         const start_time = std.time.microTimestamp();
         defer {
@@ -462,21 +461,33 @@ pub fn main() !void {
             }
         }
 
+        if (window.getKey(glfw.Key.escape) == glfw.Action.press) {
+            break;
+        }
+
         // ============================================== GPU
 
         var cmdp = curr_pf.cmdp;
 
-        try ctx.waitResetFences(&[_]vk.Fence{curr_pf.fence_work_finished});
-        const sc_next = try ctx.sc.getNext(curr_pf.sem_img_acq, null);
+        if (curr_pf.worked) // if last iteration of this pf worked, only then we should wait
+            try ctx.waitForFences(&[_]vk.Fence{curr_pf.fence_work_finished});
+        try ctx.resetFences(&[_]vk.Fence{curr_pf.fence_work_finished});
+        if (window.getKey(glfw.Key.r) == glfw.Action.press) {
+            curr_pf.worked = false;
+            continue;
+        }
+
+        const sc_next = try ctx.sc.getNext(curr_pf.sem_img_acq, null) orelse {
+            curr_pf.worked = false;
+            continue;
+        };
+        curr_pf.worked = true;
 
         defer pf_stack.next_block();
-        const dyn = try pf_stack.grab(TestUBO, 0);
-        dyn.r = @cos(elapsed + dt * 8) * 0.5 + 0.5;
+        const dyn = try pf_stack.grab(PerFrameData, 0);
+        dyn.r = @cos(elapsed + dt * 7) * 0.5 + 0.5;
         dyn.g = @sin(elapsed + dt * 2) * 0.5 + 0.5;
         dyn.b = @sin(elapsed + dt * 3) * 0.5 + 0.5;
-        // dyn.r = @floatFromInt(curr_f);
-        // dyn.g = @floatFromInt(curr_f);
-        // dyn.b = @floatFromInt(curr_f);
 
         try cmdp.reset(.{});
         var cmdb = try cmdp.alloc(.primary, 1);
@@ -507,7 +518,10 @@ pub fn main() !void {
 
         const rinfo: vk.RenderingInfoKHR = .{
             .render_area = .{
-                .extent = .{ .width = window.getFramebufferSize().width, .height = window.getFramebufferSize().height },
+                .extent = .{
+                    .width = ctx.sc.getExtent().width,
+                    .height = ctx.sc.getExtent().height,
+                },
                 .offset = .{ .x = 0, .y = 0 },
             },
             .layer_count = 1,
@@ -517,6 +531,25 @@ pub fn main() !void {
         };
         cmdb.bindDescriptorSets(.graphics, p_layout, 0, 1, &.{dset.hdl}, 0, null);
         cmdb.beginRenderingKHR(&rinfo);
+        const vp = vk.Viewport{
+            .x = 0,
+            .y = 0,
+            .width = @floatFromInt(ctx.sc.getExtent().width),
+            .height = @floatFromInt(ctx.sc.getExtent().height),
+            .min_depth = 0.0,
+            .max_depth = 1.0,
+        };
+        const scissor = vk.Rect2D{
+            .offset = .{
+                .x = 0,
+                .y = 0,
+            },
+            .extent = ctx.sc.getExtent(),
+        };
+
+        cmdb.setViewportWithCount(1, @ptrCast(&vp));
+        cmdb.setScissorWithCount(1, @ptrCast(&scissor));
+
         cmdb.bindPipeline(.graphics, pipes[0]);
         const pc: PushConstant = .{
             .adr = bd.gpu_adr.?,
@@ -531,8 +564,6 @@ pub fn main() !void {
         // should profile when we have some more complex scene :)
         cmdb.bindIndexBuffer(ib.hdl, 0, .uint32);
         cmdb.drawIndexed(3, 1, 0, 0, 0);
-        // cmdb.draw(3, 1, 0, 0);
-
         cmdb.endRenderingKHR();
 
         cmdb.pipelineBarrier(.{ .color_attachment_output_bit = true }, .{ .top_of_pipe_bit = true }, .{}, 0, null, 0, null, 1, &.{
@@ -550,24 +581,27 @@ pub fn main() !void {
 
         cmdb.endCommandBuffer() catch unreachable;
 
+        const timeline = vk.TimelineSemaphoreSubmitInfo{
+            .signal_semaphore_value_count = 2,
+            .p_signal_semaphore_values = &.{ curr_pf.sem_work_finished.next(), 0 },
+            .wait_semaphore_value_count = if (prev_pf.worked) 2 else 1,
+            .p_wait_semaphore_values = &.{ 0, prev_pf.sem_work_finished.value },
+        };
         try gq.api.submit(1, &.{
             vk.SubmitInfo{
                 .command_buffer_count = 1,
                 .p_command_buffers = &.{cmdb.handle},
                 .signal_semaphore_count = 2,
-                .p_signal_semaphores = &.{ curr_pf.sem_ready_present, curr_pf.sem_work_finished },
-                // Ensure single GPU FIF by waiting for previous frames queue submit work to finish:
-                // emulate D3D12 queue submit guarantees. This way transient per-frame resources are truly transient .
-                // (no multi-buffering needed)
-                .wait_semaphore_count = if (first_frame) 1 else 2,
-                .p_wait_semaphores = &.{ curr_pf.sem_img_acq, prev_pf.sem_work_finished },
+                .p_signal_semaphores = &.{ curr_pf.sem_work_finished.hdl, curr_pf.sem_ready_present },
+                // Chain GPU frames (truly transient per frame resources)
+                .wait_semaphore_count = if (prev_pf.worked) 2 else 1,
+                .p_wait_semaphores = &.{ curr_pf.sem_img_acq, prev_pf.sem_work_finished.hdl },
                 .p_wait_dst_stage_mask = &.{ .{ .top_of_pipe_bit = true }, .{ .top_of_pipe_bit = true } },
+                .p_next = &timeline,
             },
         }, curr_pf.fence_work_finished);
 
         try ctx.sc.present(gq, curr_pf.sem_ready_present);
-
-        glfw.pollEvents();
     }
 
     dev.deviceWaitIdle() catch unreachable;

@@ -140,18 +140,12 @@ pub fn createFence(self: *Self, maybe_varena: ?*Arena, flags: vk.FenceCreateFlag
     return f;
 }
 
-pub fn createSemaphore(self: *Self, maybe_varena: ?*Arena) !vk.Semaphore {
-    // Use timeline semaphore (core 1.2)
-    // TODO: https://www.khronos.org/blog/vulkan-timeline-semaphores
-    // const timeline_ci = vk.SemaphoreTypeCreateInfo{
-    //     .initial_value = 0,
-    //     .semaphore_type = .timeline,
-    // };
-    //
-    // const sem = try self.dev.createSemaphore(&.{
-    //     .p_next = &timeline_ci,
-    // }, null);
+pub fn destroyFence(self: *Self, hdl: vk.Fence) void {
+    self.dev.destroyFence(hdl, null);
+}
 
+/// Binary semaphore
+pub fn createSemaphore(self: *Self, maybe_varena: ?*Arena) !vk.Semaphore {
     const sem = try self.dev.createSemaphore(&.{}, null);
 
     if (maybe_varena) |varena| {
@@ -161,12 +155,32 @@ pub fn createSemaphore(self: *Self, maybe_varena: ?*Arena) !vk.Semaphore {
     return sem;
 }
 
-pub fn destroyFence(self: *Self, hdl: vk.Fence) void {
-    self.dev.destroyFence(hdl, null);
-}
-
 pub fn destroySemaphore(self: *Self, hdl: vk.Semaphore) void {
     self.dev.destroySemaphore(hdl, null);
+}
+
+pub fn createSemaphoreT(self: *Self, maybe_varena: ?*Arena) !vkt.Semaphore {
+    const timeline_ci = vk.SemaphoreTypeCreateInfo{
+        .initial_value = 0,
+        .semaphore_type = .timeline,
+    };
+
+    const sem = vkt.Semaphore{
+        .hdl = try self.dev.createSemaphore(&.{
+            .p_next = &timeline_ci,
+        }, null),
+        .value = 0,
+    };
+
+    if (maybe_varena) |varena| {
+        try varena.add(@TypeOf(sem), Self.destroySemaphoreT, sem);
+    }
+
+    return sem;
+}
+
+pub fn destroySemaphoreT(self: *Self, sem: vkt.Semaphore) void {
+    self.dev.destroySemaphore(sem.hdl, null);
 }
 
 pub fn allocateMemory(self: *Self, maybe_varena: ?*Arena, inf: vkt.MemoryAllocateInfo) !vkt.DeviceMemory {
@@ -469,6 +483,9 @@ fn createDevice(self: *Self, ator: Allocator) !void {
     bda_feats.buffer_device_address = vk.TRUE;
     bda_feats.buffer_device_address_capture_replay = vk.TRUE;
     ddi_feats.p_next = &bda_feats; // Chain pNext
+
+    var time_sem = vk.PhysicalDeviceTimelineSemaphoreFeatures{};
+    bda_feats.p_next = &time_sem;
 
     var feats: vk.PhysicalDeviceFeatures2 = .{ .p_next = &ddi_feats, .features = undefined };
 

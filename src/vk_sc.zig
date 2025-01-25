@@ -13,6 +13,10 @@ pub const Swapchain = struct {
         view: vk.ImageView,
     };
 
+    ator: Allocator,
+    pd: vk.PhysicalDevice,
+    win: glfw.Window,
+
     surf: vk.SurfaceKHR,
     hdl: vk.SwapchainKHR,
     format: vk.SurfaceFormatKHR,
@@ -23,8 +27,28 @@ pub const Swapchain = struct {
 
     next: Next,
 
-    pub fn getNext(self: *Self, img_acq_sem: vk.Semaphore, img_acq_fence: ?vk.Fence) !Next {
-        const res = try self.dev.acquireNextImageKHR(self.hdl, std.math.maxInt(u64), img_acq_sem, if (img_acq_fence) |f| f else .null_handle);
+    fn recreate(self: *Self) !void {
+        try self.dev.deviceWaitIdle();
+        try self.init_(self.ator, self.pd, self.dev, self.win, true);
+    }
+
+    pub fn getNext(self: *Self, img_acq_sem: vk.Semaphore, img_acq_fence: ?vk.Fence) !?Next {
+        const res = self.dev.acquireNextImageKHR(
+            self.hdl,
+            std.math.maxInt(u64),
+            img_acq_sem,
+            if (img_acq_fence) |f| f else .null_handle,
+        ) catch |err| {
+            switch (err) {
+                error.OutOfDateKHR => {
+                    try self.recreate();
+                    return null; // Skip this frame
+                },
+                else => {
+                    return error.SwapchainAcquireFailed;
+                },
+            }
+        };
 
         self.next = .{
             .image = self.images.items[res.image_index],
@@ -35,23 +59,33 @@ pub const Swapchain = struct {
     }
 
     pub fn present(self: *Self, present_queue: vkb.Queue, wait_sem: vk.Semaphore) !void {
-        _ = try present_queue.presentKHR(&.{
+        _ = present_queue.presentKHR(&.{
             .p_image_indices = &.{self.next.idx},
             .p_swapchains = &.{self.hdl},
             .swapchain_count = 1,
             .p_wait_semaphores = &.{wait_sem},
             .wait_semaphore_count = 1,
-        });
+        }) catch |err| {
+            switch (err) {
+                error.OutOfDateKHR => {
+                    try self.recreate();
+                    // Recreate resources and continue without presenting
+                },
+                else => {
+                    return error.SwapchainPresentFailed;
+                },
+            }
+        };
     }
 
-    pub fn init(self: *Self, ator: Allocator, pd: vk.PhysicalDevice, dev: vkb.Device, win: glfw.Window) !void {
-        self.dev = dev;
-
+    pub fn init_(self: *Self, ator: Allocator, pd: vk.PhysicalDevice, dev: vkb.Device, win: glfw.Window, recr: bool) !void {
         var arena = memh.Arena.init(ator);
         defer arena.deinit();
 
-        if (glfw.createWindowSurface(vkb.inst.handle, win, null, &self.surf) != @intFromEnum(vk.Result.success))
-            return error.SurfaceInitFailed;
+        if (!recr) {
+            if (glfw.createWindowSurface(vkb.inst.handle, win, null, &self.surf) != @intFromEnum(vk.Result.success))
+                return error.SurfaceInitFailed;
+        }
 
         self.format = blk: {
             const surf_fmts = try vkb.inst.getPhysicalDeviceSurfaceFormatsAllocKHR(pd, self.surf, arena.ator());
@@ -91,6 +125,15 @@ pub const Swapchain = struct {
             break :blk surf_caps.current_extent;
         };
 
+        if (recr) {
+            // Associated resources in addition to surface/sc released
+            // before new swapchain creation
+            for (self.views.items) |v| {
+                self.dev.destroyImageView(v, null);
+            }
+        }
+
+        const old_sc = self.hdl;
         self.hdl = try dev.createSwapchainKHR(&vk.SwapchainCreateInfoKHR{
             .surface = self.surf,
             .image_format = self.format.format,
@@ -104,7 +147,17 @@ pub const Swapchain = struct {
             .pre_transform = .{ .identity_bit_khr = true },
             .composite_alpha = .{ .opaque_bit_khr = true },
             .clipped = vk.TRUE,
+            .old_swapchain = if (old_sc != .null_handle) old_sc else .null_handle,
         }, null);
+
+        if (recr) {
+            // Swapchain destroyed after creation
+            // Surface is identical, it appears internally managed
+            // (Old surface must be same as new surface)
+            self.dev.destroySwapchainKHR(old_sc, null);
+            self.views.deinit();
+            self.images.deinit();
+        }
 
         const images = try dev.getSwapchainImagesAllocKHR(self.hdl, arena.ator());
         self.images = try std.ArrayList(vk.Image).initCapacity(ator, images.len);
@@ -127,6 +180,16 @@ pub const Swapchain = struct {
             const v = try self.dev.createImageView(&ci, null);
             try self.views.append(v);
         }
+    }
+
+    pub fn init(self: *Self, ator: Allocator, pd: vk.PhysicalDevice, dev: vkb.Device, win: glfw.Window) !void {
+        self.dev = dev;
+        self.ator = ator;
+        self.pd = pd;
+        self.win = win;
+        self.hdl = .null_handle;
+
+        try self.init_(ator, pd, dev, win, false);
     }
 
     pub fn deinit(self: *Self) void {

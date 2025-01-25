@@ -35,7 +35,7 @@ cmdp_transfer: vkt.CommandPool = undefined,
 cmdb_transfer: vkt.CommandBuffer = undefined,
 transfer_queue: vkt.Queue = undefined,
 transfer_fence: vk.Fence = undefined,
-transfer_sem: vk.Semaphore = undefined, // Sync between ownership release and acq submits
+transfer_sem: vkt.Semaphore = undefined, // Sync between ownership release and acq submits
 
 cmdp_target: vkt.CommandPool = undefined,
 cmdb_target: vkt.CommandBuffer = undefined,
@@ -179,11 +179,16 @@ pub fn submit(self: *Self, target: vkt.QueueType, sem_out: ?vk.Semaphore) !void 
         );
 
         try self.cmdb_transfer.endCommandBuffer();
+        const timeline = vk.TimelineSemaphoreSubmitInfo{
+            .signal_semaphore_value_count = 1,
+            .p_signal_semaphore_values = &.{self.transfer_sem.next()},
+        };
         const ci = vk.SubmitInfo{
             .p_command_buffers = &.{self.cmdb_transfer.handle},
             .command_buffer_count = 1,
             .signal_semaphore_count = 1,
-            .p_signal_semaphores = &.{self.transfer_sem},
+            .p_signal_semaphores = &.{self.transfer_sem.hdl},
+            .p_next = &timeline,
         };
         _ = try self.transfer_queue.api.submit(1, &.{ci}, self.transfer_fence);
     }
@@ -203,14 +208,19 @@ pub fn submit(self: *Self, target: vkt.QueueType, sem_out: ?vk.Semaphore) !void 
             null,
         );
         try self.cmdb_target.endCommandBuffer();
+        const timeline = vk.TimelineSemaphoreSubmitInfo{
+            .wait_semaphore_value_count = 1,
+            .p_wait_semaphore_values = &.{self.transfer_sem.value},
+        };
         const ci = vk.SubmitInfo{
             .p_command_buffers = &.{self.cmdb_target.handle},
             .command_buffer_count = 1,
             .signal_semaphore_count = if (sem_out != null) 1 else 0,
             .p_signal_semaphores = if (sem_out != null) &.{sem_out.?} else null,
             .wait_semaphore_count = 1,
-            .p_wait_semaphores = &.{self.transfer_sem},
+            .p_wait_semaphores = &.{self.transfer_sem.hdl},
             .p_wait_dst_stage_mask = &.{.{ .transfer_bit = true }},
+            .p_next = &timeline,
         };
         _ = try target_queue.api.submit(1, &.{ci}, self.target_fence);
     }
@@ -245,7 +255,7 @@ pub fn create(ator: Allocator, vtx: *nvk, total_size: u32) !*Self {
 
     self.transfer_queue = self.vtx.getQueue(.transfer);
     self.transfer_fence = try self.vtx.createFence(self.varena, .{ .signaled_bit = true });
-    self.transfer_sem = try self.vtx.createSemaphore(self.varena);
+    self.transfer_sem = try self.vtx.createSemaphoreT(self.varena);
     self.cmdp_transfer = try vtx.createCmdPool(self.varena, .transfer, .{ .transient_bit = true });
 
     self.target_fence = try self.vtx.createFence(self.varena, .{ .signaled_bit = true });

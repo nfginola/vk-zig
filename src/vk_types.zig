@@ -20,6 +20,18 @@ pub const DeviceMemory = struct {
     dev_addressable: bool,
 };
 
+pub const Semaphore = struct {
+    const Self = @This();
+
+    hdl: vk.Semaphore,
+    value: u64 = 0,
+
+    pub fn next(self: *Self) u64 {
+        self.value += 1;
+        return self.value;
+    }
+};
+
 pub const QueueType = enum {
     graphics,
     compute,
@@ -145,7 +157,7 @@ pub const Swapchain = struct {
     const Self = @This();
     native: vsc.Swapchain,
 
-    pub fn getNext(self: *Self, img_acq_sem: vk.Semaphore, img_acq_fence: ?vk.Fence) !vsc.Swapchain.Next {
+    pub fn getNext(self: *Self, img_acq_sem: vk.Semaphore, img_acq_fence: ?vk.Fence) !?vsc.Swapchain.Next {
         return try self.native.getNext(img_acq_sem, img_acq_fence);
     }
 
