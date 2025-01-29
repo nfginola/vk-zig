@@ -102,7 +102,7 @@ pub fn main() !void {
         .width = @intCast(image.width),
         .height = @intCast(image.height),
         .format = .r8g8b8a8_srgb,
-        .usage = .{ .sampled_bit = true, .transfer_dst_bit = true },
+        .usage = .{ .sampled_bit = true },
     });
     const img_rec = try upload.grab(image.imageByteSize(), 0);
     @memcpy(img_rec.memory.?, image.rawBytes());

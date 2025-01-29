@@ -266,16 +266,17 @@ pub fn createImage(self: *Self, maybe_varena: ?*Arena, inf: vkt.ImageInfo) !vkt.
 }
 
 pub fn createImageWithMemory(self: *Self, maybe_varena: ?*Arena, inf: vkt.ImageInfo) !vkt.Image {
+    const mips = if (inf.mips == 0) vkt.Utils.getMipLevels(inf.width, inf.height) else inf.mips;
     const hdl =
         try self.dev.createImage(&vk.ImageCreateInfo{
         .image_type = inf.type,
         .format = inf.format,
         .extent = .{ .width = inf.width, .height = inf.height, .depth = inf.depth },
-        .mip_levels = inf.mips,
+        .mip_levels = mips,
         .array_layers = inf.array_layers,
         .samples = inf.samples,
         .tiling = inf.tiling,
-        .usage = vk.ImageUsageFlags.merge(inf.usage, .{ .transfer_dst_bit = true }),
+        .usage = vk.ImageUsageFlags.merge(inf.usage, .{ .transfer_dst_bit = true, .transfer_src_bit = true }),
         .sharing_mode = inf.sharing_mode,
         .initial_layout = .undefined,
     }, null);
@@ -296,6 +297,7 @@ pub fn createImageWithMemory(self: *Self, maybe_varena: ?*Arena, inf: vkt.ImageI
     var ret = vkt.Image{
         .hdl = hdl,
         .memory = mem,
+        .mips = mips,
     };
 
     if (inf.view_type) |vtype| {

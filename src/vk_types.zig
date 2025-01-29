@@ -1,3 +1,4 @@
+const std = @import("std");
 const vk = @import("vulkan");
 const vkb = @import("vk_base.zig");
 const vsc = @import("vk_sc.zig");
@@ -142,6 +143,7 @@ pub const Image = struct {
     hdl: vk.Image,
     memory: ?DeviceMemory = null,
     view: ?vk.ImageView = null, // default full-view if requested
+    mips: u32 = 0,
 };
 pub const DeviceMemory = struct {
     hdl: vk.DeviceMemory,
@@ -365,13 +367,15 @@ pub const ImageInfo = struct {
     height: u32,
     usage: vk.ImageUsageFlags,
     depth: u32 = 1,
-    mips: u32 = 1,
+    mips: u32 = 0, // 0 --> auto gen mips
     array_layers: u32 = 1,
     samples: vk.SampleCountFlags = .{ .@"1_bit" = true },
     sharing_mode: vk.SharingMode = .exclusive,
     tiling: vk.ImageTiling = .optimal,
     view_type: ?vk.ImageViewType = null,
 };
+
+pub const MipGenInfo = struct { width: u32, height: u32, layout: vk.ImageLayout, aspect: vk.ImageAspectFlags };
 
 pub const Utils = struct {
     pub fn fullSubres(aspect: vk.ImageAspectFlags) vk.ImageSubresourceRange {
@@ -382,5 +386,162 @@ pub const Utils = struct {
             .level_count = vk.REMAINING_ARRAY_LAYERS,
             .layer_count = vk.REMAINING_MIP_LEVELS,
         };
+    }
+
+    pub fn getMipLevels(width: usize, height: usize) u32 {
+        return @intFromFloat(@floor(std.math.log2(@as(f32, @floatFromInt(@max(width, height))))));
+    }
+
+    /// Assumes image has memory allocated for all mip-levels
+    /// Must be called on command buffer with Graphics capabilities (blit)
+    pub fn generateMips(img: Image, cmdb: CommandBuffer, inf: MipGenInfo) !void {
+        const levels = img.mips;
+
+        if (levels == 1)
+            return;
+
+        // Transition all subresources to dst optimal to simplify following mip loop
+        if (inf.layout != .transfer_dst_optimal) {
+            cmdb.pipelineBarrier(
+                .{ .transfer_bit = true },
+                .{ .transfer_bit = true },
+                .{},
+                0,
+                null,
+                0,
+                null,
+                @intCast(1),
+                @ptrCast(&.{
+                    vk.ImageMemoryBarrier{
+                        .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+                        .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+                        .src_access_mask = .{},
+                        .dst_access_mask = .{ .transfer_write_bit = true },
+                        .image = img.hdl,
+                        .old_layout = inf.layout,
+                        .new_layout = .transfer_dst_optimal,
+                        .subresource_range = .{
+                            .aspect_mask = inf.aspect,
+                            .base_mip_level = 0,
+                            .level_count = vk.REMAINING_MIP_LEVELS,
+                            .base_array_layer = 0,
+                            .layer_count = 1,
+                        },
+                    },
+                }),
+            );
+        }
+
+        var mip_width: i32 = @intCast(inf.width);
+        var mip_height: i32 = @intCast(inf.height);
+
+        for (1..levels) |level| {
+            cmdb.pipelineBarrier(
+                .{ .transfer_bit = true },
+                .{ .transfer_bit = true },
+                .{},
+                0,
+                null,
+                0,
+                null,
+                @intCast(1),
+                @ptrCast(&.{
+                    vk.ImageMemoryBarrier{
+                        .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+                        .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+                        .src_access_mask = .{},
+                        .dst_access_mask = .{ .transfer_write_bit = true },
+                        .image = img.hdl,
+                        .old_layout = .transfer_dst_optimal,
+                        .new_layout = .transfer_src_optimal,
+                        .subresource_range = .{
+                            .aspect_mask = inf.aspect,
+                            .base_mip_level = @intCast(level - 1),
+                            .level_count = 1,
+                            .base_array_layer = 0,
+                            .layer_count = 1,
+                        },
+                    },
+                }),
+            );
+
+            // std.debug.print("Src: {}, {}, Dst: {}, {}\n", .{ mip_width, mip_height, @max(@divFloor(mip_width, 2), 1), @max(@divFloor(mip_height, 2), 1) });
+            cmdb.blitImage(img.hdl, .transfer_src_optimal, img.hdl, .transfer_dst_optimal, 1, &.{
+                vk.ImageBlit{
+                    .src_subresource = .{ .aspect_mask = inf.aspect, .mip_level = @intCast(level - 1), .base_array_layer = 0, .layer_count = 1 },
+                    .src_offsets = .{
+                        vk.Offset3D{ .x = 0, .y = 0, .z = 0 },
+                        vk.Offset3D{ .x = mip_width, .y = mip_height, .z = 1 },
+                    },
+                    .dst_subresource = .{ .aspect_mask = inf.aspect, .mip_level = @intCast(level), .base_array_layer = 0, .layer_count = 1 },
+                    .dst_offsets = .{
+                        vk.Offset3D{ .x = 0, .y = 0, .z = 0 },
+                        vk.Offset3D{ .x = @max(@divFloor(mip_width, 2), 1), .y = @max(@divFloor(mip_height, 2), 1), .z = 1 },
+                    },
+                },
+            }, .linear);
+
+            cmdb.pipelineBarrier(
+                .{ .transfer_bit = true },
+                .{ .transfer_bit = true },
+                .{},
+                0,
+                null,
+                0,
+                null,
+                @intCast(1),
+                @ptrCast(&.{
+                    vk.ImageMemoryBarrier{
+                        .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+                        .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+                        .src_access_mask = .{},
+                        .dst_access_mask = .{ .transfer_write_bit = true },
+                        .image = img.hdl,
+                        .old_layout = .transfer_src_optimal,
+                        .new_layout = inf.layout,
+                        .subresource_range = .{
+                            .aspect_mask = inf.aspect,
+                            .base_mip_level = @intCast(level - 1), // Source done, put back in initial layout
+                            .level_count = 1,
+                            .base_array_layer = 0,
+                            .layer_count = 1,
+                        },
+                    },
+                }),
+            );
+
+            mip_width = @max(@divFloor(mip_width, 2), 1);
+            mip_height = @max(@divFloor(mip_height, 2), 1);
+        }
+
+        // Last mip in dst optimal
+        cmdb.pipelineBarrier(
+            .{ .transfer_bit = true },
+            .{ .transfer_bit = true },
+            .{},
+            0,
+            null,
+            0,
+            null,
+            @intCast(1),
+            @ptrCast(&.{
+                vk.ImageMemoryBarrier{
+                    .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+                    .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+                    .src_access_mask = .{},
+                    .dst_access_mask = .{ .transfer_write_bit = true },
+                    .image = img.hdl,
+                    .old_layout = .transfer_dst_optimal,
+                    .new_layout = inf.layout,
+                    .subresource_range = .{
+                        .aspect_mask = inf.aspect,
+                        .base_mip_level = levels - 1,
+                        .level_count = 1,
+                        .base_array_layer = 0,
+                        .layer_count = 1,
+                    },
+                },
+            }),
+        );
     }
 };

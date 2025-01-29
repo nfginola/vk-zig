@@ -66,6 +66,7 @@ pub const ImageCopyInfo = struct {
     },
     extent: vk.Extent3D,
     layout: vk.ImageLayout = .shader_read_only_optimal,
+    gen_mips: bool = true,
 };
 
 pub fn push(self: *Self, data: []const u8, alignment: usize) !Receipt {
@@ -274,6 +275,13 @@ pub fn submit(self: *Self, target: vkt.QueueType) !vkt.Semaphore {
                         .image_subresource = item.inf.subres,
                     }},
                 );
+
+                // try vkt.Utils.generateMips(item.img, self.cmdb_transfer, .{
+                //     .aspect = .{ .color_bit = true },
+                //     .width = item.inf.extent.width,
+                //     .height = item.inf.extent.height,
+                //     .layout = .transfer_dst_optimal,
+                // });
             },
         }
     }
@@ -314,6 +322,24 @@ pub fn submit(self: *Self, target: vkt.QueueType) !vkt.Semaphore {
             @intCast(img_acqs.items.len),
             @ptrCast(img_acqs.items.ptr),
         );
+
+        // Record generate mips
+        for (self.copies.items) |copy| {
+            switch (copy) {
+                .buffer => {},
+                .image => |item| {
+                    if (item.inf.gen_mips) {
+                        try vkt.Utils.generateMips(item.img, self.cmdb_target, .{
+                            .aspect = .{ .color_bit = true },
+                            .width = item.inf.extent.width,
+                            .height = item.inf.extent.height,
+                            .layout = item.inf.layout, // Acquisition put them in final layout
+                        });
+                    }
+                },
+            }
+        }
+
         try self.cmdb_target.endCommandBuffer();
 
         try target_queue.submit(.{
