@@ -4,12 +4,6 @@
 
 
 
-// Pointer alignment, buffer_ref_align
-layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer SomeData
-{
-    float floats[];
-};
-
 // Appears like there's no alignment requirement here,
 // it just interprets the memory straight.
 // (We can use packed struct in Zig and match it here)
@@ -18,6 +12,7 @@ struct Vertex {
     vec2 uv;
 };
 
+// Pointer alignment, buffer_ref_align
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer VertexData
 {
     Vertex data[];
@@ -47,7 +42,6 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Per
 // 
 layout(push_constant) uniform constants
 {
-    SomeData some_data;
     PerFrame per_frame;
     VertexData verts;
     IndexData indices;
@@ -55,6 +49,7 @@ layout(push_constant) uniform constants
 
 
 layout(location = 0) out vec2 fragUv;
+layout(location = 1) out vec3 fragColor;
 
 out gl_PerVertex {
     vec4 gl_Position;
@@ -63,7 +58,7 @@ out gl_PerVertex {
 void main() {
     uint id = regs.indices.data[gl_VertexIndex];
     gl_Position = vec4(regs.verts.data[id].position.xyz, 1.0);
-    // fragColor = vec3(regs.per_frame.rgb);
+    fragColor = vec3(regs.per_frame.rgb);
     fragUv = regs.verts.data[id].uv;
 
 }

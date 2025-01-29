@@ -94,25 +94,6 @@ pub fn main() !void {
     try upload.copy_to_buffer(vb, try upload.push(memh.byteSliceC(Vertex, vertices[0..]), 0));
     try upload.copy_to_buffer(ib, try upload.push(memh.byteSliceC(u32, indices[0..]), 0));
 
-    // Image loading:
-    // x Get binary
-    // x Implement copy to image
-    // x Implement image creation
-    // x Image uploaded
-    // x Make createImageWithMemory helper
-    // x Make immutable sampler
-    // x Sample image with descriptor indexing and immutable sampler
-    // - Generate mips helper   -> Blit half-res
-    //
-    // Wishlist:
-    //      - Make a std Allocator that always aligns by image size and passes it here.
-    //      - upload.getImageAllocator()    --> Bumps upload internally
-    //
-    //      Or just defer this until we save to our own binary format so we don't have to
-    //      guess how std Allocator is being used in a library.
-    //      (We expect single allocation, we can't guarantee this in library since Allocator is a
-    //      general purpose interface)
-    //
     var image = try zimg.Image.fromFilePath(arena.ator(), "res/textures/vulkan.png");
     std.debug.assert(image.pixelFormat() == .rgba32);
     const img = try ctx.createImageWithMemory(varena, vkt.ImageInfo{
@@ -212,11 +193,16 @@ pub fn main() !void {
     //  x Use timeline semaphores
     //  x Swapchain recreation on resize
     //
-    //  x Load textures
+    //  x Load and read texture
+    //
+    //  - Generate mips helper   -> Blit half-res
+    //      - Function that fills command buffer with half-res blits
     //
     //  - Make Gfx pipeline helpers
     //
-    //  - Add VMA support
+    //  - Add ImGUI
+    //
+    //  - Add tracy
     //
     //  - Make math helpers
     //      - Vector2,3,4
@@ -227,6 +213,8 @@ pub fn main() !void {
     //          - mat3 x v3
     //          - mat4 x v4
     //      - Use Right Handed coordinate system with Z up and Y into screen
+    //
+    //  - Add VMA support
     //
     //  - Some simple ass render graph to avoid manual barriers
     //
@@ -317,7 +305,6 @@ pub fn main() !void {
     // 8 byte alignment of u64 causes gap..
     // sort by largest to smallest top-down to avoid having to pad
     const PushConstant = packed struct {
-        adr: u64,
         pf_adr: u64,
         vb_adr: u64,
         ib_adr: u64,
@@ -468,17 +455,6 @@ pub fn main() !void {
     var display_dt_interval: f32 = init_disp_interval; // in s
     var elapsed: f32 = 0.0; // in s
 
-    // ======== Create buffer using buffer device address
-    const bd = try ctx.createBufferWithMemory(varena, .{
-        .size = 64_000,
-        .mem_type = .cpu_to_gpu,
-        .usage = .{ .shader_device_address_bit = true, .storage_buffer_bit = true },
-    });
-    const bd_map = try ctx.mapBuffer(f32, bd);
-    bd_map[0] = 0.2;
-    bd_map[1] = 0.8;
-    bd_map[2] = 0.5;
-
     while (!window.shouldClose()) {
         glfw.pollEvents();
 
@@ -567,28 +543,24 @@ pub fn main() !void {
         };
         cmdb.bindDescriptorSets(.graphics, p_layout, 0, 1, &.{dset.hdl}, 0, null);
         cmdb.beginRenderingKHR(&rinfo);
-        const vp = vk.Viewport{
+        cmdb.setViewportWithCount(1, @ptrCast(&vk.Viewport{
             .x = 0,
             .y = 0,
             .width = @floatFromInt(ctx.sc.getExtent().width),
             .height = @floatFromInt(ctx.sc.getExtent().height),
             .min_depth = 0.0,
             .max_depth = 1.0,
-        };
-        const scissor = vk.Rect2D{
+        }));
+        cmdb.setScissorWithCount(1, @ptrCast(&vk.Rect2D{
             .offset = .{
                 .x = 0,
                 .y = 0,
             },
             .extent = ctx.sc.getExtent(),
-        };
-
-        cmdb.setViewportWithCount(1, @ptrCast(&vp));
-        cmdb.setScissorWithCount(1, @ptrCast(&scissor));
+        }));
 
         cmdb.bindPipeline(.graphics, pipes[0]);
         const pc: PushConstant = .{
-            .adr = bd.gpu_adr.?,
             .pf_adr = pf_stack.buf.gpu_adr.? + pf_stack.getOffset(curr_f),
             .vb_adr = vb.gpu_adr.?,
             .ib_adr = ib.gpu_adr.?,
