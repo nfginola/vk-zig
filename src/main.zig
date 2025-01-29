@@ -116,6 +116,7 @@ pub fn main() !void {
     var image = try zimg.Image.fromFilePath(arena.ator(), "res/textures/vulkan.png");
     std.debug.assert(image.pixelFormat() == .rgba32);
     const img = try ctx.createImageWithMemory(varena, vkt.ImageInfo{
+        .view_type = .@"2d",
         .type = .@"2d",
         .width = @intCast(image.width),
         .height = @intCast(image.height),
@@ -135,16 +136,6 @@ pub fn main() !void {
 
     _ = try upload.submit(.graphics);
     try upload.host_wait();
-
-    // Create image view, TODO: Hide in ctx
-    const view = try ctx.dev.createImageView(&vk.ImageViewCreateInfo{
-        .image = img.hdl,
-        .view_type = .@"2d",
-        .format = .r8g8b8a8_srgb,
-        .components = .{ .r = .identity, .g = .identity, .b = .identity, .a = .identity },
-        .subresource_range = vkt.Utils.fullSubres(.{ .color_bit = true }),
-    }, null);
-    defer ctx.dev.destroyImageView(view, null);
 
     // Create sampler
     const samp = try ctx.dev.createSampler(&vk.SamplerCreateInfo{
@@ -319,7 +310,7 @@ pub fn main() !void {
         .dst_array_el = 0,
         .dst_type = .sampled_image,
         .layout = .shader_read_only_optimal,
-        .view = view,
+        .view = img.view.?,
     });
 
     // Need packed to preserve memory ordering

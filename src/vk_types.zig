@@ -141,6 +141,7 @@ pub const Buffer = struct {
 pub const Image = struct {
     hdl: vk.Image,
     memory: ?DeviceMemory = null,
+    view: ?vk.ImageView = null, // default full-view if requested
 };
 pub const DeviceMemory = struct {
     hdl: vk.DeviceMemory,
@@ -369,6 +370,7 @@ pub const ImageInfo = struct {
     samples: vk.SampleCountFlags = .{ .@"1_bit" = true },
     sharing_mode: vk.SharingMode = .exclusive,
     tiling: vk.ImageTiling = .optimal,
+    view_type: ?vk.ImageViewType = null,
 };
 
 pub const Utils = struct {

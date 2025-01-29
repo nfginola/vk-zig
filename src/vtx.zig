@@ -293,10 +293,20 @@ pub fn createImageWithMemory(self: *Self, maybe_varena: ?*Arena, inf: vkt.ImageI
     // std.debug.print("Alignment req image: {}\n", .{mem_req.alignment});
     try self.dev.bindImageMemory(hdl, mem.hdl, 0);
 
-    const ret = vkt.Image{
+    var ret = vkt.Image{
         .hdl = hdl,
         .memory = mem,
     };
+
+    if (inf.view_type) |vtype| {
+        ret.view = try self.dev.createImageView(&vk.ImageViewCreateInfo{
+            .image = hdl,
+            .view_type = vtype,
+            .format = inf.format,
+            .components = .{ .r = .identity, .g = .identity, .b = .identity, .a = .identity },
+            .subresource_range = vkt.Utils.fullSubres(.{ .color_bit = true }),
+        }, null);
+    }
 
     if (maybe_varena) |varena| {
         try varena.add(@TypeOf(ret), Self.destroyImage, ret);
@@ -307,6 +317,9 @@ pub fn createImageWithMemory(self: *Self, maybe_varena: ?*Arena, inf: vkt.ImageI
 
 pub fn destroyImage(self: *Self, img: vkt.Image) void {
     self.dev.destroyImage(img.hdl, null);
+    if (img.view) |v| {
+        self.dev.destroyImageView(v, null);
+    }
 }
 
 pub fn createBuffer(self: *Self, maybe_varena: ?*Arena, size: u64, usage: vk.BufferUsageFlags) !vkt.Buffer {
