@@ -197,7 +197,7 @@ pub fn main() !void {
     //
     //  x Generate mips helper
     //
-    //  - Make Gfx pipeline helpers
+    //  x Make Gfx pipeline helpers
     //
     //  - Add ImGUI
     //

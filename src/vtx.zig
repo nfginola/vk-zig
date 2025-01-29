@@ -458,7 +458,7 @@ pub fn destroyDescSetLayout(self: *Self, layout: vk.DescriptorSetLayout) void {
 }
 
 pub fn createGraphicsPipeline(self: *Self, maybe_varena: ?*Arena, inf: vkt.GraphicsPipelineInfo) !vk.Pipeline {
-    var pinfo = vkt.Utils.basePipe();
+    var pinfo = vkt.Utils.base_pipe;
     pinfo.layout = inf.layout;
 
     // Unpack
@@ -474,6 +474,7 @@ pub fn createGraphicsPipeline(self: *Self, maybe_varena: ?*Arena, inf: vkt.Graph
     pinfo.p_stages = @ptrCast(&shaders);
 
     var output = vk.PipelineRenderingCreateInfoKHR{
+        .p_next = null,
         .color_attachment_count = @intCast(inf.output.colors.len),
         .p_color_attachment_formats = @ptrCast(inf.output.colors.ptr),
         .view_mask = 0,

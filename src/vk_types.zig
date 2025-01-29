@@ -542,75 +542,73 @@ pub const Utils = struct {
         );
     }
 
-    pub fn basePipe() vk.GraphicsPipelineCreateInfo {
-        return vk.GraphicsPipelineCreateInfo{
-            .p_dynamic_state = &vk.PipelineDynamicStateCreateInfo{
-                // With count required if we want to pass ViewportStateCreateInfo with 0 counts
-                // for pipeline --> which we needed since rasterizer_discard_enable = FALSE,
-                // requires a VPci even if we dynamically set
-                .dynamic_state_count = 2,
-                .p_dynamic_states = &.{
-                    vk.DynamicState.viewport_with_count,
-                    vk.DynamicState.scissor_with_count,
+    pub const base_pipe = vk.GraphicsPipelineCreateInfo{
+        .p_dynamic_state = &vk.PipelineDynamicStateCreateInfo{
+            // With count required if we want to pass ViewportStateCreateInfo with 0 counts
+            // for pipeline --> which we needed since rasterizer_discard_enable = FALSE,
+            // requires a VPci even if we dynamically set
+            .dynamic_state_count = 2,
+            .p_dynamic_states = &.{
+                vk.DynamicState.viewport_with_count,
+                vk.DynamicState.scissor_with_count,
+            },
+        },
+        .p_vertex_input_state = &vk.PipelineVertexInputStateCreateInfo{},
+        .p_input_assembly_state = &vk.PipelineInputAssemblyStateCreateInfo{
+            .topology = .triangle_list,
+            .primitive_restart_enable = vk.FALSE,
+        },
+        .p_multisample_state = &vk.PipelineMultisampleStateCreateInfo{
+            .rasterization_samples = .{ .@"1_bit" = true },
+            .sample_shading_enable = vk.FALSE,
+            .min_sample_shading = 0,
+            .alpha_to_coverage_enable = vk.FALSE,
+            .alpha_to_one_enable = vk.FALSE,
+        },
+        .p_depth_stencil_state = &vk.PipelineDepthStencilStateCreateInfo{
+            .depth_test_enable = vk.FALSE,
+            .depth_write_enable = vk.FALSE,
+            .depth_compare_op = .always,
+            .depth_bounds_test_enable = vk.FALSE,
+            .stencil_test_enable = vk.FALSE,
+            .front = std.mem.zeroInit(vk.StencilOpState, .{}),
+            .back = std.mem.zeroInit(vk.StencilOpState, .{}),
+            .min_depth_bounds = 0.0,
+            .max_depth_bounds = 1.0,
+        },
+        .p_rasterization_state = &vk.PipelineRasterizationStateCreateInfo{
+            .cull_mode = .{ .back_bit = true },
+            .front_face = .counter_clockwise,
+            .polygon_mode = .fill,
+            .depth_clamp_enable = vk.TRUE,
+            .rasterizer_discard_enable = vk.FALSE,
+            .depth_bias_enable = vk.FALSE,
+            .depth_bias_clamp = 0.0,
+            .depth_bias_constant_factor = 0.0,
+            .depth_bias_slope_factor = 0.0,
+            .line_width = 1.0,
+        },
+        // If rasterizer_discard_enable = FALSE, spec requires us setting a Viewport (even if dynamic)
+        .p_viewport_state = &vk.PipelineViewportStateCreateInfo{},
+        .p_color_blend_state = &vk.PipelineColorBlendStateCreateInfo{
+            .logic_op_enable = vk.FALSE,
+            .logic_op = .clear,
+            .attachment_count = 1,
+            .blend_constants = .{ 0.0, 0.0, 0.0, 0.0 },
+            .p_attachments = &.{
+                vk.PipelineColorBlendAttachmentState{
+                    .blend_enable = vk.FALSE,
+                    .color_write_mask = .{ .r_bit = true, .g_bit = true, .b_bit = true },
+                    .src_alpha_blend_factor = .one,
+                    .alpha_blend_op = .add,
+                    .color_blend_op = .add,
+                    .dst_alpha_blend_factor = .one,
+                    .dst_color_blend_factor = .one,
+                    .src_color_blend_factor = .one,
                 },
             },
-            .p_vertex_input_state = &vk.PipelineVertexInputStateCreateInfo{},
-            .p_input_assembly_state = &vk.PipelineInputAssemblyStateCreateInfo{
-                .topology = .triangle_list,
-                .primitive_restart_enable = vk.FALSE,
-            },
-            .p_multisample_state = &vk.PipelineMultisampleStateCreateInfo{
-                .rasterization_samples = .{ .@"1_bit" = true },
-                .sample_shading_enable = vk.FALSE,
-                .min_sample_shading = 0,
-                .alpha_to_coverage_enable = vk.FALSE,
-                .alpha_to_one_enable = vk.FALSE,
-            },
-            .p_depth_stencil_state = &vk.PipelineDepthStencilStateCreateInfo{
-                .depth_test_enable = vk.FALSE,
-                .depth_write_enable = vk.FALSE,
-                .depth_compare_op = .always,
-                .depth_bounds_test_enable = vk.FALSE,
-                .stencil_test_enable = vk.FALSE,
-                .front = std.mem.zeroInit(vk.StencilOpState, .{}),
-                .back = std.mem.zeroInit(vk.StencilOpState, .{}),
-                .min_depth_bounds = 0.0,
-                .max_depth_bounds = 1.0,
-            },
-            .p_rasterization_state = &vk.PipelineRasterizationStateCreateInfo{
-                .cull_mode = .{ .back_bit = true },
-                .front_face = .counter_clockwise,
-                .polygon_mode = .fill,
-                .depth_clamp_enable = vk.TRUE,
-                .rasterizer_discard_enable = vk.FALSE,
-                .depth_bias_enable = vk.FALSE,
-                .depth_bias_clamp = 0.0,
-                .depth_bias_constant_factor = 0.0,
-                .depth_bias_slope_factor = 0.0,
-                .line_width = 1.0,
-            },
-            // If rasterizer_discard_enable = FALSE, spec requires us setting a Viewport (even if dynamic)
-            .p_viewport_state = &vk.PipelineViewportStateCreateInfo{},
-            .p_color_blend_state = &vk.PipelineColorBlendStateCreateInfo{
-                .logic_op_enable = vk.FALSE,
-                .logic_op = .clear,
-                .attachment_count = 1,
-                .blend_constants = .{ 0.0, 0.0, 0.0, 0.0 },
-                .p_attachments = &.{
-                    vk.PipelineColorBlendAttachmentState{
-                        .blend_enable = vk.FALSE,
-                        .color_write_mask = .{ .r_bit = true, .g_bit = true, .b_bit = true },
-                        .src_alpha_blend_factor = .one,
-                        .alpha_blend_op = .add,
-                        .color_blend_op = .add,
-                        .dst_alpha_blend_factor = .one,
-                        .dst_color_blend_factor = .one,
-                        .src_color_blend_factor = .one,
-                    },
-                },
-            },
-            .subpass = 0,
-            .base_pipeline_index = 0,
-        };
-    }
+        },
+        .subpass = 0,
+        .base_pipeline_index = 0,
+    };
 };
