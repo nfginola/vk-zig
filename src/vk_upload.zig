@@ -275,13 +275,6 @@ pub fn submit(self: *Self, target: vkt.QueueType) !vkt.Semaphore {
                         .image_subresource = item.inf.subres,
                     }},
                 );
-
-                // try vkt.Utils.generateMips(item.img, self.cmdb_transfer, .{
-                //     .aspect = .{ .color_bit = true },
-                //     .width = item.inf.extent.width,
-                //     .height = item.inf.extent.height,
-                //     .layout = .transfer_dst_optimal,
-                // });
             },
         }
     }
