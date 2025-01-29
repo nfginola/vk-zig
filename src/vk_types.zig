@@ -138,6 +138,10 @@ pub const Buffer = struct {
     gpu_adr: ?u64 = 0, // Used only for buffer device address
     mem_offset: ?u64 = 0,
 };
+pub const Image = struct {
+    hdl: vk.Image,
+    memory: ?DeviceMemory = null,
+};
 pub const DeviceMemory = struct {
     hdl: vk.DeviceMemory,
     dev_addressable: bool,
@@ -189,6 +193,15 @@ pub const DescriptorSet = struct {
         dst_type: vk.DescriptorType,
     };
 
+    const ImageWrite = struct {
+        layout: vk.ImageLayout,
+        view: vk.ImageView,
+
+        dst_binding: u32,
+        dst_array_el: u32,
+        dst_type: vk.DescriptorType,
+    };
+
     pub fn writeBuffer(self: *Self, write: BufferWrite) void {
         const binfo = vk.DescriptorBufferInfo{
             .buffer = write.buf.hdl,
@@ -198,7 +211,7 @@ pub const DescriptorSet = struct {
 
         self.dev.updateDescriptorSets(1, &.{vk.WriteDescriptorSet{
             .dst_set = self.hdl,
-            .dst_binding = 0,
+            .dst_binding = write.dst_binding,
             .dst_array_element = write.dst_array_el,
             .p_image_info = &.{vk.DescriptorImageInfo{
                 .image_layout = .undefined,
@@ -211,7 +224,28 @@ pub const DescriptorSet = struct {
             .p_buffer_info = &.{binfo},
         }}, 0, null);
     }
-    pub fn writeImage() void {}
+    pub fn writeImage(self: *Self, write: ImageWrite) void {
+        const iinfo = vk.DescriptorImageInfo{
+            .image_layout = write.layout,
+            .image_view = write.view,
+            .sampler = .null_handle,
+        };
+
+        self.dev.updateDescriptorSets(1, &.{vk.WriteDescriptorSet{
+            .dst_set = self.hdl,
+            .dst_binding = write.dst_binding,
+            .dst_array_element = write.dst_array_el,
+            .descriptor_count = 1,
+            .descriptor_type = write.dst_type,
+            .p_image_info = &.{iinfo},
+            .p_texel_buffer_view = &.{.null_handle},
+            .p_buffer_info = &.{vk.DescriptorBufferInfo{
+                .offset = 0,
+                .buffer = .null_handle,
+                .range = 0,
+            }},
+        }}, 0, null);
+    }
 };
 
 pub const DescriptorPool = struct {
@@ -321,6 +355,20 @@ pub const MemoryBufferInfo = struct {
     size: u64,
     usage: vk.BufferUsageFlags,
     mem_type: MemoryType,
+};
+
+pub const ImageInfo = struct {
+    type: vk.ImageType,
+    format: vk.Format,
+    width: u32,
+    height: u32,
+    usage: vk.ImageUsageFlags,
+    depth: u32 = 1,
+    mips: u32 = 1,
+    array_layers: u32 = 1,
+    samples: vk.SampleCountFlags = .{ .@"1_bit" = true },
+    sharing_mode: vk.SharingMode = .exclusive,
+    tiling: vk.ImageTiling = .optimal,
 };
 
 pub const Utils = struct {

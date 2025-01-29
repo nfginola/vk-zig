@@ -41,17 +41,31 @@ copies: std.ArrayList(CopyKind) = undefined,
 const BufferCopy = struct {
     rec: Receipt,
     dst: vkt.Buffer,
-    dst_stage: vk.PipelineStageFlags,
 };
 
 const ImageCopy = struct {
     // TODO: support images
-    a: u32,
+    //
+    rec: Receipt,
+    img: vkt.Image,
+    inf: ImageCopyInfo,
 };
 
 const CopyKind = union(enum) {
     buffer: BufferCopy,
     image: ImageCopy,
+};
+
+pub const ImageCopyInfo = struct {
+    offset: vk.Offset3D = .{ .x = 0, .y = 0, .z = 0 },
+    subres: vk.ImageSubresourceLayers = .{
+        .aspect_mask = .{ .color_bit = true },
+        .mip_level = 0, // Target mip
+        .base_array_layer = 0, // Target start layer
+        .layer_count = 1,
+    },
+    extent: vk.Extent3D,
+    layout: vk.ImageLayout = .shader_read_only_optimal,
 };
 
 pub fn push(self: *Self, data: []const u8, alignment: usize) !Receipt {
@@ -84,8 +98,13 @@ pub fn grab(self: *Self, bytes: usize, alignment: usize) !Receipt {
     return rec;
 }
 
-pub fn copy_to_buffer(self: *Self, dst: vkt.Buffer, dst_stage: vk.PipelineStageFlags, receipt: Receipt) !void {
-    const copy = CopyKind{ .buffer = .{ .dst = dst, .dst_stage = dst_stage, .rec = receipt } };
+pub fn copy_to_buffer(self: *Self, dst: vkt.Buffer, receipt: Receipt) !void {
+    const copy = CopyKind{ .buffer = .{ .dst = dst, .rec = receipt } };
+    try self.copies.append(copy);
+}
+
+pub fn copy_to_image(self: *Self, dst: vkt.Image, inf: ImageCopyInfo, receipt: Receipt) !void {
+    const copy = CopyKind{ .image = .{ .img = dst, .inf = inf, .rec = receipt } };
     try self.copies.append(copy);
 }
 
@@ -119,18 +138,16 @@ pub fn submit(self: *Self, target: vkt.QueueType) !vkt.Semaphore {
         self.cmdb_target = try self.cmdp_target.alloc(.primary, 1);
     } else {}
 
-    // Record copies on transfer queue and prep ownership release and acquisition barriers
+    // Batch barriers (queue ownership release, acquisition and image layout prep)
     var buf_releases = try std.ArrayList(vk.BufferMemoryBarrier).initCapacity(self.arena.ator(), 10);
     var buf_acqs = try std.ArrayList(vk.BufferMemoryBarrier).initCapacity(self.arena.ator(), 10);
+    var img_layout_prep = try std.ArrayList(vk.ImageMemoryBarrier).initCapacity(self.arena.ator(), 10);
+    var img_releases = try std.ArrayList(vk.ImageMemoryBarrier).initCapacity(self.arena.ator(), 10);
+    var img_acqs = try std.ArrayList(vk.ImageMemoryBarrier).initCapacity(self.arena.ator(), 10);
     for (self.copies.items) |copy| {
         switch (copy) {
             .buffer => |item| {
-                self.cmdb_transfer.copyBuffer(self.vk_buf.hdl, item.dst.hdl, 1, &.{vk.BufferCopy{
-                    .dst_offset = 0,
-                    .src_offset = item.rec.start,
-                    .size = item.rec.size,
-                }});
-
+                // Validation requires us to give src/dst family on both the releaser and acquirer
                 try buf_releases.append(vk.BufferMemoryBarrier{
                     .buffer = item.dst.hdl,
                     .src_queue_family_index = self.transfer_queue.fam.?,
@@ -145,14 +162,118 @@ pub fn submit(self: *Self, target: vkt.QueueType) !vkt.Semaphore {
                     .src_queue_family_index = self.transfer_queue.fam.?,
                     .dst_queue_family_index = target_queue.fam.?,
                     .src_access_mask = .{ .transfer_write_bit = true },
-                    .dst_access_mask = .{},
+                    .dst_access_mask = .{ .memory_read_bit = true },
                     .offset = 0,
                     .size = item.rec.size,
                 });
             },
             .image => |item| {
-                // TODO
-                _ = item;
+                // Put images into right layout for optimal transfer
+                try img_layout_prep.append(vk.ImageMemoryBarrier{
+                    .src_queue_family_index = self.transfer_queue.fam.?,
+                    .dst_queue_family_index = self.transfer_queue.fam.?,
+                    .src_access_mask = .{},
+                    .dst_access_mask = .{ .transfer_write_bit = true },
+                    .image = item.img.hdl,
+                    .old_layout = .undefined,
+                    .new_layout = .transfer_dst_optimal,
+                    .subresource_range = .{
+                        .aspect_mask = item.inf.subres.aspect_mask,
+                        .base_array_layer = item.inf.subres.base_array_layer, // Sync from target subresouce and up (remaining)
+                        .base_mip_level = 0,
+                        .layer_count = vk.REMAINING_ARRAY_LAYERS,
+                        .level_count = vk.REMAINING_MIP_LEVELS,
+                    },
+                });
+
+                try img_releases.append(vk.ImageMemoryBarrier{
+                    .src_queue_family_index = self.transfer_queue.fam.?,
+                    .dst_queue_family_index = target_queue.fam.?,
+                    .src_access_mask = .{ .transfer_write_bit = true },
+                    .dst_access_mask = .{ .transfer_write_bit = true },
+                    .image = item.img.hdl,
+                    .old_layout = .transfer_dst_optimal,
+                    .new_layout = .general, // general purpose layout intermediary
+                    .subresource_range = .{
+                        .aspect_mask = item.inf.subres.aspect_mask,
+                        .base_array_layer = item.inf.subres.base_array_layer,
+                        .base_mip_level = 0,
+                        .layer_count = vk.REMAINING_ARRAY_LAYERS,
+                        .level_count = vk.REMAINING_MIP_LEVELS,
+                    },
+                });
+
+                try img_acqs.append(vk.ImageMemoryBarrier{
+                    .src_queue_family_index = self.transfer_queue.fam.?,
+                    .dst_queue_family_index = target_queue.fam.?,
+                    .src_access_mask = .{ .transfer_write_bit = true },
+                    .dst_access_mask = .{ .memory_read_bit = true },
+                    .image = item.img.hdl,
+
+                    // validation layer bug?: for some reason validation still thinks its in transfer dst optimal
+                    // must be that API just doesnt transition from tranfer dst optimal to general on img_release?
+                    // it doesn't matter much since Graphics, Compute and Transfer all support transfer_dst_optimal,
+                    // and for Sparse Queue everything goes into there as undefined anyways
+                    // .old_layout = .general,
+                    .old_layout = .transfer_dst_optimal,
+
+                    .new_layout = item.inf.layout, // final desired layout
+                    .subresource_range = .{
+                        .aspect_mask = item.inf.subres.aspect_mask,
+                        .base_array_layer = item.inf.subres.base_array_layer,
+                        .base_mip_level = 0,
+                        .layer_count = vk.REMAINING_ARRAY_LAYERS,
+                        .level_count = vk.REMAINING_MIP_LEVELS,
+                    },
+                });
+            },
+        }
+    }
+
+    // Record image layout prep before copies
+    self.cmdb_transfer.pipelineBarrier(
+        .{ .bottom_of_pipe_bit = true },
+        .{ .transfer_bit = true },
+        .{},
+        0,
+        null,
+        0,
+        null,
+        @intCast(img_layout_prep.items.len),
+        @ptrCast(img_layout_prep.items.ptr),
+    );
+
+    // Record copies
+    for (self.copies.items) |copy| {
+        switch (copy) {
+            .buffer => |item| {
+                self.cmdb_transfer.copyBuffer(self.vk_buf.hdl, item.dst.hdl, 1, &.{vk.BufferCopy{
+                    .dst_offset = 0,
+                    .src_offset = item.rec.start,
+                    .size = item.rec.size,
+                }});
+            },
+            .image => |item| {
+
+                // FUTURE: We can coalesce multiple copies into a single
+                //         API call, but we need to group per final layout.
+                //         Keep it simple with singles for now.
+                self.cmdb_transfer.copyBufferToImage(
+                    self.vk_buf.hdl,
+                    item.img.hdl,
+                    .transfer_dst_optimal,
+                    1,
+                    &.{vk.BufferImageCopy{
+                        .buffer_offset = item.rec.start,
+                        // Buffer row/image 0 --> Assume data tightly packed
+                        // based on Extent
+                        .buffer_row_length = 0,
+                        .buffer_image_height = 0,
+                        .image_offset = item.inf.offset,
+                        .image_extent = item.inf.extent,
+                        .image_subresource = item.inf.subres,
+                    }},
+                );
             },
         }
     }
@@ -167,8 +288,8 @@ pub fn submit(self: *Self, target: vkt.QueueType) !vkt.Semaphore {
             null,
             @intCast(buf_releases.items.len),
             @ptrCast(buf_releases.items.ptr),
-            0,
-            null,
+            @intCast(img_releases.items.len),
+            @ptrCast(img_releases.items.ptr),
         );
 
         try self.cmdb_transfer.endCommandBuffer();
@@ -183,15 +304,15 @@ pub fn submit(self: *Self, target: vkt.QueueType) !vkt.Semaphore {
     {
         try self.cmdb_target.beginCommandBuffer(&vk.CommandBufferBeginInfo{ .flags = .{ .one_time_submit_bit = true } });
         self.cmdb_target.pipelineBarrier(
-            .{ .transfer_bit = true },
+            .{ .bottom_of_pipe_bit = true },
             .{ .top_of_pipe_bit = true },
             .{},
             0,
             null,
             @intCast(buf_acqs.items.len),
             @ptrCast(buf_acqs.items.ptr),
-            0,
-            null,
+            @intCast(img_acqs.items.len),
+            @ptrCast(img_acqs.items.ptr),
         );
         try self.cmdb_target.endCommandBuffer();
 
@@ -240,10 +361,10 @@ pub fn create(ator: Allocator, vtx: *nvk, total_size: u32) !*Self {
     self.copies = try std.ArrayList(CopyKind).initCapacity(self.arena.ator(), 100);
 
     self.transfer_queue = self.vtx.getQueue(.transfer);
-    self.transfer_sem = try self.vtx.createSemaphoreT(self.varena);
+    self.transfer_sem = try self.vtx.createSemaphore(self.varena);
     self.cmdp_transfer = try vtx.createCmdPool(self.varena, .transfer, .{ .transient_bit = true });
 
-    self.target_sem = try self.vtx.createSemaphoreT(self.varena);
+    self.target_sem = try self.vtx.createSemaphore(self.varena);
 
     self.vk_buf = try vtx.createBufferWithMemory(self.varena, .{
         .size = total_size,

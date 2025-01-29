@@ -59,7 +59,7 @@ pub fn main() !void {
     var gq = ctx.getQueue(.graphics);
     defer ctx.deinit();
 
-    var upload = try utx.create(arena.ator(), ctx, 64_000);
+    var upload = try utx.create(arena.ator(), ctx, 256_000);
     defer upload.deinit();
 
     // Top level VK resources lifetime arena
@@ -70,9 +70,9 @@ pub fn main() !void {
         x: f32,
         y: f32,
         z: f32,
-        r: f32,
-        g: f32,
-        b: f32,
+        pad_1: f32 = 0.0,
+        u: f32 = 0.0,
+        v: f32 = 0.0,
     };
     const vb = try ctx.createBufferWithMemory(varena, .{
         .size = 32_000,
@@ -85,16 +85,86 @@ pub fn main() !void {
         .mem_type = .gpu,
     });
     // Upload tri and indices
-    const vertices = [_]Vertex{
-        .{ .x = 0.0, .y = -0.5, .z = 0.0, .r = 1.0, .g = 0.0, .b = 0.0 },
-        .{ .x = -0.5, .y = 0.5, .z = 0.0, .r = 0.0, .g = 1.0, .b = 0.0 },
-        .{ .x = 0.5, .y = 0.5, .z = 0.0, .r = 0.0, .g = 0.0, .b = 1.0 },
+    const vertices = [_]Vertex{ // ndc is (-1,-1) top left
+        .{ .x = 0.0, .y = -0.5, .z = 0.0, .u = 0.5, .v = 0.0 }, // uv space is (0,0) top left
+        .{ .x = -0.5, .y = 0.5, .z = 0.0, .u = 0.0, .v = 1.0 },
+        .{ .x = 0.5, .y = 0.5, .z = 0.0, .u = 1.0, .v = 1.0 },
     };
     const indices = [_]u32{ 0, 1, 2 };
-    try upload.copy_to_buffer(vb, .{ .vertex_shader_bit = true }, try upload.push(memh.byteSliceC(Vertex, vertices[0..]), 0));
-    try upload.copy_to_buffer(ib, .{ .vertex_shader_bit = true }, try upload.push(memh.byteSliceC(u32, indices[0..]), 0));
+    try upload.copy_to_buffer(vb, try upload.push(memh.byteSliceC(Vertex, vertices[0..]), 0));
+    try upload.copy_to_buffer(ib, try upload.push(memh.byteSliceC(u32, indices[0..]), 0));
+
+    // Image loading:
+    // x Get binary
+    // x Implement copy to image
+    // x Implement image creation
+    // x Image uploaded
+    // x Make createImageWithMemory helper
+    // x Make immutable sampler
+    // x Sample image with descriptor indexing and immutable sampler
+    // - Generate mips helper   -> Blit half-res
+    //
+    // Wishlist:
+    //      - Make a std Allocator that always aligns by image size and passes it here.
+    //      - upload.getImageAllocator()    --> Bumps upload internally
+    //
+    //      Or just defer this until we save to our own binary format so we don't have to
+    //      guess how std Allocator is being used in a library.
+    //      (We expect single allocation, we can't guarantee this in library since Allocator is a
+    //      general purpose interface)
+    //
+    var image = try zimg.Image.fromFilePath(arena.ator(), "res/textures/vulkan.png");
+    std.debug.assert(image.pixelFormat() == .rgba32);
+    const img = try ctx.createImageWithMemory(varena, vkt.ImageInfo{
+        .type = .@"2d",
+        .width = @intCast(image.width),
+        .height = @intCast(image.height),
+        .format = .r8g8b8a8_srgb,
+        .usage = .{ .sampled_bit = true, .transfer_dst_bit = true },
+    });
+    const img_rec = try upload.grab(image.imageByteSize(), 0);
+    @memcpy(img_rec.memory.?, image.rawBytes());
+    try upload.copy_to_image(img, .{
+        .extent = .{
+            .width = @intCast(image.width),
+            .height = @intCast(image.height),
+            .depth = 1,
+        },
+        .layout = .shader_read_only_optimal,
+    }, img_rec);
+
     _ = try upload.submit(.graphics);
     try upload.host_wait();
+
+    // Create image view, TODO: Hide in ctx
+    const view = try ctx.dev.createImageView(&vk.ImageViewCreateInfo{
+        .image = img.hdl,
+        .view_type = .@"2d",
+        .format = .r8g8b8a8_srgb,
+        .components = .{ .r = .identity, .g = .identity, .b = .identity, .a = .identity },
+        .subresource_range = vkt.Utils.fullSubres(.{ .color_bit = true }),
+    }, null);
+    defer ctx.dev.destroyImageView(view, null);
+
+    // Create sampler
+    const samp = try ctx.dev.createSampler(&vk.SamplerCreateInfo{
+        .min_filter = .linear,
+        .mag_filter = .linear,
+        .address_mode_u = .repeat,
+        .address_mode_v = .repeat,
+        .address_mode_w = .repeat,
+        .anisotropy_enable = vk.TRUE,
+        .max_anisotropy = 16.0,
+        .border_color = vk.BorderColor.float_opaque_black,
+        .unnormalized_coordinates = vk.FALSE,
+        .compare_enable = vk.FALSE,
+        .compare_op = .always,
+        .mipmap_mode = .linear,
+        .mip_lod_bias = 0.0,
+        .min_lod = 0.0,
+        .max_lod = vk.LOD_CLAMP_NONE,
+    }, null);
+    defer ctx.dev.destroySampler(samp, null);
 
     // TODO:
     //  x Grab glslc
@@ -151,7 +221,7 @@ pub fn main() !void {
     //  x Use timeline semaphores
     //  x Swapchain recreation on resize
     //
-    //  - Add
+    //  x Load textures
     //
     //  - Make Gfx pipeline helpers
     //
@@ -199,12 +269,23 @@ pub fn main() !void {
     // Make descriptor set layout
     const dlayout = try ctx.createDescSetLayout(arena.ator(), varena, .{
         .bindings = &[_]vkt.DescriptorSetLayoutBinding{
+            // Binding with variable descriptor count must be the highets binding within that set!
             vkt.DescriptorSetLayoutBinding{
                 .binding = .{
                     .binding = 0,
+                    .descriptor_count = 1,
+                    .descriptor_type = .sampler,
+                    .stage_flags = .{ .fragment_bit = true },
+                    .p_immutable_samplers = &.{samp},
+                },
+                .flags = .{},
+            },
+            vkt.DescriptorSetLayoutBinding{
+                .binding = .{
+                    .binding = 1,
                     .descriptor_count = 1000,
-                    .descriptor_type = .uniform_buffer,
-                    .stage_flags = .{ .vertex_bit = true },
+                    .descriptor_type = .sampled_image,
+                    .stage_flags = .{ .fragment_bit = true },
                 },
                 .flags = .{
                     .update_after_bind_bit = true,
@@ -221,24 +302,25 @@ pub fn main() !void {
     // Make pool, allocate, write to descriptor
     var dpool = try ctx.createDescPool(varena, 1, &[_]vk.DescriptorPoolSize{
         .{
+            .descriptor_count = 10,
+            .type = .sampler,
+        },
+        .{
             .descriptor_count = 10_000,
-            .type = .uniform_buffer,
+            .type = .sampled_image,
         },
     }, .{ .update_after_bind_bit = true }); // DDI
     var dset = try dpool.alloc(.{
         .layout = dlayout,
         .variable_descriptors = 1000, // DDI
     });
-    for (0..MAX_FIF) |frame| {
-        dset.writeBuffer(.{
-            .buf = pf_stack.buf,
-            .buf_offset = pf_stack.getOffset(@intCast(frame)),
-            .buf_range = pf_stack.getBlockSize(),
-            .dst_binding = 0,
-            .dst_array_el = @intCast(frame),
-            .dst_type = .uniform_buffer,
-        });
-    }
+    dset.writeImage(.{
+        .dst_binding = 1,
+        .dst_array_el = 0,
+        .dst_type = .sampled_image,
+        .layout = .shader_read_only_optimal,
+        .view = view,
+    });
 
     // Need packed to preserve memory ordering
     // 8 byte alignment of u64 causes gap..
@@ -373,21 +455,18 @@ pub fn main() !void {
         // gpu
         cmdp: vkt.CommandPool,
         sem_img_acq: vkt.Semaphore,
-        sem_ready_present: vkt.Semaphore, // for present queue TODO: consider using timeline semaphores
-
-        sem_work_finished: vkt.Semaphore, // for future frames
+        sem_ready_present: vkt.Semaphore,
+        sem_work_finished: vkt.Semaphore,
     };
 
     var pf: [MAX_FIF]PerFrame = undefined;
     for (&pf) |*f| {
-        // cpu
         f.farena = memh.Arena.init(arena.ator());
 
-        // gpu
         f.cmdp = try ctx.createCmdPool(varena, .graphics, .{ .transient_bit = true });
-        f.sem_img_acq = try ctx.createSemaphore(varena);
-        f.sem_ready_present = try ctx.createSemaphore(varena);
-        f.sem_work_finished = try ctx.createSemaphoreT(varena);
+        f.sem_img_acq = try ctx.createSemaphoreB(varena);
+        f.sem_ready_present = try ctx.createSemaphoreB(varena);
+        f.sem_work_finished = try ctx.createSemaphore(varena);
     }
 
     var prev_pf: PerFrame = pf[MAX_FIF - 1];

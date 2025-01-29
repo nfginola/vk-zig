@@ -145,7 +145,7 @@ pub fn destroyFence(self: *Self, hdl: vk.Fence) void {
 }
 
 /// Binary semaphore
-pub fn createSemaphore(self: *Self, maybe_varena: ?*Arena) !vkt.Semaphore {
+pub fn createSemaphoreB(self: *Self, maybe_varena: ?*Arena) !vkt.Semaphore {
     const sem = try self.dev.createSemaphore(&.{}, null);
 
     const ret: vkt.Semaphore = .{
@@ -165,7 +165,7 @@ pub fn destroySemaphore(self: *Self, sem: vkt.Semaphore) void {
     self.dev.destroySemaphore(sem.hdl, null);
 }
 
-pub fn createSemaphoreT(self: *Self, maybe_varena: ?*Arena) !vkt.Semaphore {
+pub fn createSemaphore(self: *Self, maybe_varena: ?*Arena) !vkt.Semaphore {
     const timeline_ci = vk.SemaphoreTypeCreateInfo{
         .initial_value = 0,
         .semaphore_type = .timeline,
@@ -240,6 +240,73 @@ pub fn allocateMemory(self: *Self, maybe_varena: ?*Arena, inf: vkt.MemoryAllocat
 
 pub fn freeMemory(self: *Self, mem: vkt.DeviceMemory) void {
     self.dev.freeMemory(mem.hdl, null);
+}
+
+pub fn createImage(self: *Self, maybe_varena: ?*Arena, inf: vkt.ImageInfo) !vkt.Image {
+    const ret = vkt.Image{
+        .hdl = try self.dev.createImage(&vk.ImageCreateInfo{
+            .image_type = inf.type,
+            .format = inf.format,
+            .extent = .{ .width = inf.width, .height = inf.height, .depth = inf.depth },
+            .mip_levels = inf.mips,
+            .array_layers = inf.array_layers,
+            .samples = inf.samples,
+            .tiling = inf.tiling,
+            .usage = vk.ImageUsageFlags.merge(inf.usage, .{ .transfer_dst_bit = true }),
+            .sharing_mode = inf.sharing_mode,
+            .initial_layout = .undefined,
+        }, null),
+    };
+
+    if (maybe_varena) |varena| {
+        try varena.add(@TypeOf(ret), Self.destroyImage, ret);
+    }
+
+    return ret;
+}
+
+pub fn createImageWithMemory(self: *Self, maybe_varena: ?*Arena, inf: vkt.ImageInfo) !vkt.Image {
+    const hdl =
+        try self.dev.createImage(&vk.ImageCreateInfo{
+        .image_type = inf.type,
+        .format = inf.format,
+        .extent = .{ .width = inf.width, .height = inf.height, .depth = inf.depth },
+        .mip_levels = inf.mips,
+        .array_layers = inf.array_layers,
+        .samples = inf.samples,
+        .tiling = inf.tiling,
+        .usage = vk.ImageUsageFlags.merge(inf.usage, .{ .transfer_dst_bit = true }),
+        .sharing_mode = inf.sharing_mode,
+        .initial_layout = .undefined,
+    }, null);
+
+    const mem_req = self.dev.getImageMemoryRequirements(hdl);
+
+    // FUTURE: Often the required memory is larger than packed data size, if we
+    //         track memory usage, we should track it properly here.
+    const mem = try self.allocateMemory(maybe_varena, .{
+        .size = mem_req.size,
+        .type = .gpu,
+    });
+    // FUTURE: If suballocating, we need to guarantee that image ends up
+    // at an aligned address!
+    // std.debug.print("Alignment req image: {}\n", .{mem_req.alignment});
+    try self.dev.bindImageMemory(hdl, mem.hdl, 0);
+
+    const ret = vkt.Image{
+        .hdl = hdl,
+        .memory = mem,
+    };
+
+    if (maybe_varena) |varena| {
+        try varena.add(@TypeOf(ret), Self.destroyImage, ret);
+    }
+
+    return ret;
+}
+
+pub fn destroyImage(self: *Self, img: vkt.Image) void {
+    self.dev.destroyImage(img.hdl, null);
 }
 
 pub fn createBuffer(self: *Self, maybe_varena: ?*Arena, size: u64, usage: vk.BufferUsageFlags) !vkt.Buffer {

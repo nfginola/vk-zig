@@ -2,12 +2,6 @@
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_buffer_reference : require
 
-// Unsized arrays, requires extension to be turned on!
-// https://docs.vulkan.org/samples/latest/samples/extensions/descriptor_indexing/README.html
-layout(set = 0, binding = 0) uniform UBO {
-    vec3 rgb;
-// } ubos[1000];
-} ubos[];
 
 
 // Pointer alignment, buffer_ref_align
@@ -21,7 +15,7 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Som
 // (We can use packed struct in Zig and match it here)
 struct Vertex {
     vec3 position;
-    vec3 color;
+    vec2 uv;
 };
 
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer VertexData
@@ -60,7 +54,7 @@ layout(push_constant) uniform constants
 } regs;
 
 
-layout(location = 0) out vec3 fragColor;
+layout(location = 0) out vec2 fragUv;
 
 out gl_PerVertex {
     vec4 gl_Position;
@@ -69,6 +63,7 @@ out gl_PerVertex {
 void main() {
     uint id = regs.indices.data[gl_VertexIndex];
     gl_Position = vec4(regs.verts.data[id].position.xyz, 1.0);
-    fragColor = vec3(regs.per_frame.rgb);
+    // fragColor = vec3(regs.per_frame.rgb);
+    fragUv = regs.verts.data[id].uv;
 
 }
