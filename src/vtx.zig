@@ -457,6 +457,45 @@ pub fn destroyDescSetLayout(self: *Self, layout: vk.DescriptorSetLayout) void {
     self.dev.destroyDescriptorSetLayout(layout, null);
 }
 
+pub fn createGraphicsPipeline(self: *Self, maybe_varena: ?*Arena, inf: vkt.GraphicsPipelineInfo) !vk.Pipeline {
+    var pinfo = vkt.Utils.basePipe();
+    pinfo.layout = inf.layout;
+
+    // Unpack
+    var shaders: [5]vk.PipelineShaderStageCreateInfo = undefined;
+    for (0..inf.shaders.len) |i| {
+        shaders[i] = vk.PipelineShaderStageCreateInfo{
+            .stage = inf.shaders.ptr[i].stage,
+            .p_name = inf.shaders.ptr[i].name,
+            .module = inf.shaders.ptr[i].module,
+        };
+    }
+    pinfo.stage_count = @intCast(inf.shaders.len);
+    pinfo.p_stages = @ptrCast(&shaders);
+
+    var output = vk.PipelineRenderingCreateInfoKHR{
+        .color_attachment_count = @intCast(inf.output.colors.len),
+        .p_color_attachment_formats = @ptrCast(inf.output.colors.ptr),
+        .view_mask = 0,
+        .depth_attachment_format = inf.output.depth,
+        .stencil_attachment_format = inf.output.stencil,
+    };
+    pinfo.p_next = &output;
+
+    var pipe: vk.Pipeline = undefined;
+    _ = try self.dev.createGraphicsPipelines(.null_handle, 1, &.{pinfo}, null, @ptrCast(&pipe));
+
+    if (maybe_varena) |varena| {
+        try varena.add(@TypeOf(pipe), Self.destroyPipeline, pipe);
+    }
+
+    return pipe;
+}
+
+pub fn destroyPipeline(self: *Self, hdl: vk.Pipeline) void {
+    self.dev.destroyPipeline(hdl, null);
+}
+
 fn getPhysicalDevice(self: *Self, ator: Allocator) !void {
     const pds = try vkb.inst.enumeratePhysicalDevicesAlloc(ator);
     for (pds) |pd| {
