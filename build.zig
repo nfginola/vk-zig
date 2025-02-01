@@ -31,6 +31,14 @@ pub fn build(b: *std.Build) !void {
     });
     exe.root_module.addImport("zigimg", zigimg_dependency.module("zigimg"));
 
+    // Zgui
+    const zgui = b.dependency("zgui", .{
+        .shared = true,
+        .backend = .glfw_vulkan,
+    });
+    exe.root_module.addImport("zgui", zgui.module("root"));
+    exe.linkLibrary(zgui.artifact("imgui"));
+
     // Add Vulkan options
     const vk_opts = b.addOptions();
     vk_opts.addOption(bool, "validation_layer", b.option(bool, "vl", "Vulkan Validation Layer") orelse true); // On by default

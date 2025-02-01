@@ -15,6 +15,10 @@
             .url = "https://github.com/zigimg/zigimg/archive/2011317c068a8ffb39c962ca6246cf7783acae37.tar.gz",
             .hash = "1220553fd331505a69dacb397f2ed6d05a727326d2d11fbd5915ef014c5e197b62da",
         },
+        .zgui = .{
+            .url = "https://github.com/nfginola/zgui/archive/66bea44f02974290ea4ea50474eea0a2ef5bf59b.tar.gz",
+            .hash = "1220b5584d8a8a31129946e0473b40dfed2a4c9f1b8e3bb0696329c428b7933a8922",
+        },
     },
     .paths = .{
         "build.zig",

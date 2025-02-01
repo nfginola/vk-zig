@@ -14,7 +14,11 @@ layout(set = 0, binding = 0) uniform sampler imm_samp;
 layout(set = 0, binding = 1) uniform texture2D texs[];
 
 void main() {
-    vec4 color = texture(sampler2D(texs[nonuniformEXT(0)], imm_samp), vec2(fragUv));
-    outColor = vec4(color.rgb * fragColor, 1.0);
+    vec3 color = texture(sampler2D(texs[nonuniformEXT(0)], imm_samp), vec2(fragUv)).rgb;
+    color = vec3(fragUv, 0.0);
+    color = pow(color, vec3(2.22));
+
+    outColor = vec4(color, 1.0);
+    
     // outColor = vec4(fragColor, 1.0);
 }

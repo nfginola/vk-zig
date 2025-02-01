@@ -7,6 +7,7 @@ const memh = @import("memory_helpers.zig");
 const utx = @import("vk_upload.zig");
 const vkt = @import("vk_types.zig");
 const vkds = @import("vk_ds.zig");
+const zgui = @import("zgui");
 
 const WIDTH = 1600;
 const HEIGHT = 900;
@@ -299,6 +300,13 @@ pub fn main() !void {
         .layout = .shader_read_only_optimal,
         .view = img.view.?,
     });
+    dset.writeImage(.{
+        .dst_binding = 1,
+        .dst_array_el = 5,
+        .dst_type = .sampled_image,
+        .layout = .shader_read_only_optimal,
+        .view = img.view.?,
+    });
 
     // Need packed to preserve memory ordering
     // 8 byte alignment of u64 causes gap..
@@ -421,6 +429,12 @@ pub fn main() !void {
         var cmdb = try cmdp.alloc(.primary, 1);
         try cmdb.beginCommandBuffer(&.{ .flags = .{ .one_time_submit_bit = true } });
 
+        zgui.backend.newFrame(ctx.sc.getExtent().width, ctx.sc.getExtent().width);
+        _ = zgui.DockSpaceOverViewport(0, zgui.getMainViewport(), .{ .passthru_central_node = true });
+
+        var showdemo = true;
+        zgui.showDemoWindow(&showdemo);
+
         cmdb.pipelineBarrier(.{ .bottom_of_pipe_bit = true }, .{ .color_attachment_output_bit = true }, .{}, 0, null, 0, null, 1, &.{
             vk.ImageMemoryBarrier{
                 .old_layout = .undefined,
@@ -488,6 +502,8 @@ pub fn main() !void {
         // should profile when we have some more complex scene :)
         cmdb.bindIndexBuffer(ib.hdl, 0, .uint32);
         cmdb.drawIndexed(3, 1, 0, 0, 0);
+
+        zgui.backend.render(@intFromEnum(cmdb.handle));
         cmdb.endRenderingKHR();
 
         cmdb.pipelineBarrier(.{ .color_attachment_output_bit = true }, .{ .top_of_pipe_bit = true }, .{}, 0, null, 0, null, 1, &.{

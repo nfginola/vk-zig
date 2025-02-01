@@ -6,6 +6,8 @@ const vk = @import("vulkan");
 const vkt = @import("vk_types.zig");
 const vkb = @import("vk_base.zig");
 const memh = @import("memory_helpers.zig");
+const zgui = @import("zgui");
+const vkg = @import("vk_gui.zig");
 
 const Self = @This();
 
@@ -33,6 +35,8 @@ memory_heaps: [@typeInfo(vkt.MemoryType).@"enum".fields.len]u32,
 
 sc: vkt.Swapchain,
 
+var global_dev: vkt.Device = undefined;
+
 pub fn create(
     ator: Allocator,
     opts: InitOptions,
@@ -50,11 +54,62 @@ pub fn create(
     try self.createDevice(ator);
     try self.sc.native.init(ator, self.pd, self.dev, opts.window);
 
+    try vkg.init(ator, self);
+
+    // const pool = try self.createDescPool(null, 10, &[_]vk.DescriptorPoolSize{
+    //     vk.DescriptorPoolSize{
+    //         .descriptor_count = 10,
+    //         .type = .combined_image_sampler,
+    //     },
+    // }, .{ .free_descriptor_set_bit = true });
+    //
+    // const prend: zgui.backend.VkPipelineRenderingCreateInfo = .{
+    //     .s_type = @intFromEnum(vk.StructureType.pipeline_rendering_create_info),
+    //     .color_attachment_count = 1,
+    //     .p_color_attachment_formats = &[_]i32{@intFromEnum(self.sc.getFormat())},
+    //     .view_mask = 0,
+    //     .depth_attachment_format = 0,
+    //     .stencil_attachment_format = 0,
+    // };
+    //
+    // const init: zgui.backend.ImGui_ImplVulkan_InitInfo = .{
+    //     .instance = @intFromEnum(vkb.inst.handle),
+    //     .physical_device = @intFromEnum(self.pd),
+    //     .device = @intFromEnum(self.dev.handle),
+    //     .queue_family = self.getQueue(.graphics).fam.?,
+    //     .queue = @intFromEnum(self.getQueue(.graphics).api.handle),
+    //     .descriptor_pool = @intFromEnum(pool.hdl),
+    //     .min_image_count = 2,
+    //     .image_count = 2,
+    //     .render_pass = 0,
+    //     .use_dynamic_rendering = true,
+    //     .pipeline_rendering_create_info = prend,
+    // };
+    //
+    // const vk_loader = struct {
+    //     pub fn load(function_name: [*:0]const u8, user_data: ?*anyopaque) callconv(.C) ?*anyopaque {
+    //         if (user_data == null)
+    //             std.debug.assert(false);
+    //
+    //         const instance: *vk.Instance = @ptrCast(@alignCast(user_data.?));
+    //         return @constCast(@ptrCast(get_inst_fn(instance.*, function_name)));
+    //     }
+    // }.load;
+    //
+    // zgui.init(ator);
+    // zgui.io.setConfigFlags(.{ .dock_enable = true });
+    // const style = zgui.getStyle();
+    // zgui.Style.setColorsBuiltin(style, .dark);
+    //
+    // _ = zgui.backend.loadFunctions(vk_loader, &vkb.inst.handle);
+    // zgui.backend.init(init, opts.window.handle);
+
     return self;
 }
 
 pub fn deinit(self: *Self) void {
     self.dev.deviceWaitIdle() catch unreachable;
+    vkg.deinit();
     self.sc.native.deinit();
     self.dev.destroyDevice(null);
     vkb.deinit();
@@ -463,18 +518,17 @@ pub fn createGraphicsPipeline(self: *Self, maybe_varena: ?*Arena, inf: vkt.Graph
 
     // Unpack
     var shaders: [5]vk.PipelineShaderStageCreateInfo = undefined;
-    for (0..inf.shaders.len) |i| {
+    for (inf.shaders, 0..) |shader, i| {
         shaders[i] = vk.PipelineShaderStageCreateInfo{
-            .stage = inf.shaders.ptr[i].stage,
-            .p_name = inf.shaders.ptr[i].name,
-            .module = inf.shaders.ptr[i].module,
+            .stage = shader.stage,
+            .p_name = shader.name,
+            .module = shader.module,
         };
     }
     pinfo.stage_count = @intCast(inf.shaders.len);
     pinfo.p_stages = @ptrCast(&shaders);
 
     var output = vk.PipelineRenderingCreateInfoKHR{
-        .p_next = null,
         .color_attachment_count = @intCast(inf.output.colors.len),
         .p_color_attachment_formats = @ptrCast(inf.output.colors.ptr),
         .view_mask = 0,

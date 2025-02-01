@@ -37,6 +37,8 @@ var debug_msgr: ?vk.DebugUtilsMessengerEXT = null;
 pub var vki: InstanceDispatch = undefined;
 pub var inst: Instance = undefined;
 
+pub var get_instance_proc_adr: vk.PfnGetInstanceProcAddr = undefined;
+
 pub fn init(
     ator: Allocator,
     app_name: [*:0]const u8,
@@ -46,6 +48,7 @@ pub fn init(
     // Vulkan entrypoint to obtain a VkInstance provided by GLFW
     // https://registry.khronos.org/vulkan/specs/latest/man/html/vkGetInstanceProcAddr.html
     vkb = try BaseDispatch.load(get_inst_fn);
+    get_instance_proc_adr = get_inst_fn;
 
     var inst_exts = std.ArrayList([*:0]const u8).init(ator);
     var inst_layers = std.ArrayList([*:0]const u8).init(ator);
