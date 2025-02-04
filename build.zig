@@ -136,6 +136,14 @@ pub fn build_tracy_server(b: *std.Build, name: []const u8, description: []const 
         "--parallel",
     });
 
+    // In case user has not built the app yet and
+    // bin directory does not exist yet.
+    const make_dir = b.addSystemCommand(&.{"mkdir"});
+    make_dir.addArgs(&.{
+        "-p",
+        b.exe_dir,
+    });
+
     const copy_server = b.addSystemCommand(&.{"cp"});
     copy_server.addArgs(&.{
         "ext/tracy/profiler/build/tracy-profiler",
@@ -144,7 +152,8 @@ pub fn build_tracy_server(b: *std.Build, name: []const u8, description: []const 
 
     setup.step.dependOn(&submodule_init.step);
     compile.step.dependOn(&setup.step);
-    copy_server.step.dependOn(&compile.step);
+    make_dir.step.dependOn(&compile.step);
+    copy_server.step.dependOn(&make_dir.step);
 
     const build_cmd = b.step(name, description);
     build_cmd.dependOn(&copy_server.step);
@@ -157,6 +166,17 @@ pub fn build_tracy_server(b: *std.Build, name: []const u8, description: []const 
         const bin = try std.mem.concat(arena.allocator(), u8, &.{ b.exe_dir, "/", "tracy-profiler" });
         const run_tracy = b.addSystemCommand(&.{bin});
         const run_with_tracy = b.step("tr", "Run the tracy server");
+
+        // Check if tracy-profiler exists
+        const file_path = bin;
+        const fs = std.fs.cwd();
+        const file = fs.openFile(file_path, .{});
+        if (file) |f| {
+            f.close();
+        } else |_| {
+            run_tracy.step.dependOn(build_cmd);
+        }
+
         run_with_tracy.dependOn(&run_tracy.step);
     }
 
@@ -164,8 +184,9 @@ pub fn build_tracy_server(b: *std.Build, name: []const u8, description: []const 
     {
         const unix = builtin.os.tag == .linux or builtin.os.tag == .macos;
         // Use & to run the first command in the background, allowing the second to run.
-        // Otherwise everything here is sequential
-        const args = if (unix) &.{ "sh", "-c", "zig build run & zig build tr" } else &.{ "/C", "zig build run & zig build tr" };
+        // Otherwise everything here is sequential.
+        // Last one runs the app so any output is still piped to stdout.
+        const args = if (unix) &.{ "sh", "-c", "zig build tr & zig build run" } else &.{ "/C", "zig build tr & zig build run" };
 
         const run_both_cmd = b.addSystemCommand(args);
 
