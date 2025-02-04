@@ -15,10 +15,7 @@ layout(set = 0, binding = 1) uniform texture2D texs[];
 
 void main() {
     vec3 color = texture(sampler2D(texs[nonuniformEXT(0)], imm_samp), vec2(fragUv)).rgb;
-    color = vec3(fragUv, 0.0);
-    color = pow(color, vec3(2.22));
-
+    // color = vec3(fragUv, 0.0);
+    // color = pow(color, vec3(2.22));
     outColor = vec4(color, 1.0);
-    
-    // outColor = vec4(fragColor, 1.0);
 }

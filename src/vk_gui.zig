@@ -53,7 +53,7 @@ pub fn init(ator: Allocator, vk_ctx: *vtx) !void {
     }.load;
 
     zgui.init(ator);
-    zgui.io.setConfigFlags(.{ .dock_enable = true });
+    zgui.io.setConfigFlags(.{ .dock_enable = true, .is_srgb = true });
     const style = zgui.getStyle();
     zgui.Style.setColorsBuiltin(style, .dark);
 

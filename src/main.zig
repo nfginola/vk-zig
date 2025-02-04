@@ -8,6 +8,7 @@ const utx = @import("vk_upload.zig");
 const vkt = @import("vk_types.zig");
 const vkds = @import("vk_ds.zig");
 const zgui = @import("zgui");
+const ztracy = @import("ztracy");
 
 const WIDTH = 1600;
 const HEIGHT = 900;
@@ -200,7 +201,7 @@ pub fn main() !void {
     //
     //  x Make Gfx pipeline helpers
     //
-    //  - Add ImGUI
+    //  x Add ImGUI
     //
     //  - Add tracy
     //
@@ -382,6 +383,9 @@ pub fn main() !void {
     while (!window.shouldClose()) {
         glfw.pollEvents();
 
+        const tracy_zone = ztracy.ZoneNC(@src(), "Compute Magic", 0x00_ff_00_00);
+        defer tracy_zone.End();
+
         var curr_pf = &pf[curr_f];
         defer curr_f = (curr_f + 1) % MAX_FIF;
         defer prev_pf = pf[curr_f];
@@ -429,7 +433,7 @@ pub fn main() !void {
         var cmdb = try cmdp.alloc(.primary, 1);
         try cmdb.beginCommandBuffer(&.{ .flags = .{ .one_time_submit_bit = true } });
 
-        zgui.backend.newFrame(ctx.sc.getExtent().width, ctx.sc.getExtent().width);
+        zgui.backend.newFrame(ctx.sc.getExtent().width, ctx.sc.getExtent().height);
         _ = zgui.DockSpaceOverViewport(0, zgui.getMainViewport(), .{ .passthru_central_node = true });
 
         var showdemo = true;
@@ -528,6 +532,8 @@ pub fn main() !void {
         });
 
         try ctx.sc.present(gq, curr_pf.sem_ready_present.hdl);
+
+        ztracy.FrameMark();
     }
 
     ctx.dev.deviceWaitIdle() catch unreachable;
